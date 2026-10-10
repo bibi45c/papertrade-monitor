@@ -27,7 +27,7 @@
       <p id="executionHistory" class="footnote">等待队列历史；旧样本没有该字段时保留缺失。</p>
     </section>
     <section class="panel markets"><div class="section-heading"><div><p class="eyebrow">MARKET SNAPSHOT</p><h2>行情与差价</h2></div><span id="priceStatus" class="subtle">各来源独立标记时间</span></div><div class="table-scroll"><table><thead><tr><th>资产</th><th>HL 买一 / 卖一</th><th>Paper 链上中间价</th><th>中间价差</th><th>HL 标记价</th><th>小时资金费</th><th>数据年龄</th></tr></thead><tbody id="markets"></tbody></table></div><p class="footnote">差价 = Paper 中间价 ÷ HL 买卖中间价 − 1。两次观测时间可能不同；下方方案另按订单簿深度计算实际进场价格。资金费为当前小时费率，正数时多方付给空方。</p></section>
-    <div class="workspace">
+    <div class="workspace" hidden>
       <section class="panel controls"><div class="section-heading"><div><p class="eyebrow">HEDGE CALCULATOR</p><h2>你的 1000 U 方案</h2></div></div>
         <form id="config">
           <div class="field-row"><label>对冲资产<select id="coin"><option>BTC</option><option>ETH</option></select></label><label>Paper 方向<select id="direction"><option value="long">做多 / HL 做空</option><option value="short">做空 / HL 做多</option></select></label></div>
