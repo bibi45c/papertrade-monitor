@@ -1,5 +1,5 @@
 import { collect } from './collect.mjs';
-import { saveSnapshot, latestSnapshot, getHistory, purgeExpired, exportDay } from './storage.mjs';
+import { saveSnapshot, latestSnapshot, getHistory, purgeExpired, exportDay, exportSnapshots } from './storage.mjs';
 
 let pending = null, hot = null;
 export async function liveSnapshot() {
@@ -16,6 +16,11 @@ export async function api(request, db) {
   if (url.pathname === '/api/health') return json({ ok: true, storage: db ? 'configured' : 'unconfigured', mode: 'public-read-only', historyRetentionDays: 90 });
   if (!db) return json({ error: '历史数据库尚未绑定；实时查询仍可使用。', storage: 'unconfigured' }, 503);
   if (url.pathname === '/api/latest') return json({ snapshot: await latestSnapshot(db) });
+  if (url.pathname === '/api/archive') {
+    const integerParam = (name, fallback) => { const value = url.searchParams.get(name); return value === null ? fallback : /^\d+$/.test(value) ? Number(value) : NaN; };
+    try { return json(await exportSnapshots(db, { after: integerParam('after', 0), through: integerParam('through', Date.now()), limit: integerParam('limit', 120) })); }
+    catch (error) { if (error instanceof RangeError) return json({ error: error.message }, 400); throw error; }
+  }
   if (url.pathname === '/api/history') return json(await getHistory(db, Number(url.searchParams.get('hours') ?? 24)));
   if (url.pathname === '/api/export.csv') {
     const day = url.searchParams.get('day') ?? new Date().toISOString().slice(0, 10);

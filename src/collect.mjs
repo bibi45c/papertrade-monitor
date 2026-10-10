@@ -1,4 +1,5 @@
 import { readExecutionQueue } from './execution-queue.mjs';
+import { readJson, ReadError, checkRpcError } from './read-retry.mjs';
 export const URLS = Object.freeze({ paper: 'https://exchange.papertrade.xyz', info: 'https://api.hyperliquid.xyz/info', rpc: 'https://rpc.hyperliquid.xyz/evm' });
 const BBO = '0x000000000000000000000000000000000000080e';
 const raw = value => { if (typeof value !== 'string' || !/^-?\d+$/.test(value)) throw new Error('Invalid raw amount'); return Number(BigInt(value)) / 1e18; };
@@ -42,11 +43,7 @@ export function parseBbo(hex, scale) {
   return { paperBid: bid, paperAsk: ask, paperMid: (bid + ask) / 2 };
 }
 
-async function fetchJson(url, body, fetcher) {
-  const response = await fetcher(url, { method: body === undefined ? 'GET' : 'POST', headers: { 'Accept': 'application/json', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
-}
+const fetchJson = readJson;
 
 export async function collect({ fetcher = fetch, now = Date.now(), pressureReader = () => readExecutionQueue({ fetcher }) } = {}) {
   const result = { version: 1, collectedAt: now, sources: {}, markets: [], paper: null, balances: null, trading: null, queue: null,
@@ -103,23 +100,24 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
   });
   const priceJob = (async () => {
     if (!result.trading) throw new Error('No Paper instrument parameters');
-    const block = await fetchJson(URLS.rpc, { jsonrpc: '2.0', id: 1, method: 'eth_getBlockByNumber', params: ['latest', false] }, fetcher);
-    if (!/^0x[0-9a-f]+$/i.test(block.result?.number ?? '') || !/^0x[0-9a-f]+$/i.test(block.result?.timestamp ?? '')) throw new Error('Missing EVM block');
+    const deadline = Date.now() + 10000;
+    const block = await fetchJson(URLS.rpc, { jsonrpc: '2.0', id: 1, method: 'eth_getBlockByNumber', params: ['latest', false] }, fetcher, {
+      deadline, validate: value => {
+        checkRpcError(value);
+        if (!/^0x[0-9a-f]+$/i.test(value.result?.number ?? '') || !/^0x[0-9a-f]+$/i.test(value.result?.timestamp ?? '')) throw new ReadError('Missing EVM block', true);
+        return value;
+      },
+    });
     const items = result.trading.instruments.filter(i => coins.includes(i.symbol));
     const requests = items.map((i, idx) => ({ jsonrpc: '2.0', id: idx + 1, method: 'eth_call', params: [{ to: BBO, data: '0x' + i.assetIndex.toString(16).padStart(64, '0') }, block.result.number] }));
-    let reads;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        reads = await fetchJson(URLS.rpc, requests, fetcher);
-        if (!Array.isArray(reads)) throw new Error('Unknown RPC batch');
-        for (const read of reads) if (read.error) throw new Error('RPC: ' + String(read.error.message ?? read.error.code).slice(0, 140));
-        if (!items.every((i, idx) => reads.some(r => r.id === idx + 1))) throw new Error('Incomplete RPC batch');
-        break;
-      } catch (error) {
-        if (attempt === 1) throw error;
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
-    }
+    const reads = await fetchJson(URLS.rpc, requests, fetcher, {
+      deadline, validate: value => {
+        if (!Array.isArray(value)) { checkRpcError(value); throw new Error('Unknown RPC batch'); }
+        for (const read of value) checkRpcError(read);
+        if (!items.every((i, idx) => value.some(r => r.id === idx + 1))) throw new ReadError('Incomplete RPC batch', true);
+        return value;
+      },
+    });
     const at = Number(BigInt(block.result.timestamp)) * 1000;
     return { block: block.result.number, at, markets: items.map((i, idx) => ({ coin: i.symbol, ...parseBbo(reads.find(x => x.id === idx + 1)?.result, i.priceScale), paperAt: at, paperBlock: block.result.number })) };
   })();

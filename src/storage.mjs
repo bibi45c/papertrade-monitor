@@ -18,6 +18,17 @@ export async function latestSnapshot(db) {
   return row ? JSON.parse(row.payload) : null;
 }
 
+// Full stored payloads, without aggregation or numeric conversion. Bounded pages
+// allow the archive to keep exact raw strings and source failure information.
+export async function exportSnapshots(db, { after = 0, through = Date.now(), limit = 120 } = {}) {
+  if (![after, through, limit].every(Number.isSafeInteger) || after < 0 || through < after || limit < 1 || limit > 120) throw new RangeError('Invalid archive cursor, upper bound or limit (1-120)');
+  const data = await db.prepare('SELECT collected_at, payload FROM snapshots WHERE collected_at > ? AND collected_at <= ? ORDER BY collected_at LIMIT ?').bind(after, through, limit + 1).all();
+  const selected = (data.results ?? []).slice(0, limit);
+  const available = await db.prepare('SELECT MIN(collected_at) AS oldestAt, MAX(collected_at) AS latestAt, COUNT(*) AS count FROM snapshots WHERE collected_at <= ?').bind(through).first();
+  return { version: 1, through, available, rows: selected.map(r => ({ collectedAt: r.collected_at, snapshot: JSON.parse(r.payload) })),
+    nextAfter: selected.at(-1)?.collected_at ?? after, complete: (data.results ?? []).length <= limit };
+}
+
 export async function getHistory(db, hours = 24, now = Date.now()) {
   const bounded = Math.min(2160, Math.max(1, Number.isFinite(hours) ? hours : 24));
   const bucket = Math.max(60000, Math.ceil(bounded * 60 / 1440) * 60000);
