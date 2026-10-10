@@ -2,6 +2,8 @@
 
 只读网站、终端采集器与对冲成本计算器。预算默认 Paper 1000 USDC，HL 对冲保证金另计。不会连接钱包、签名或者提交订单。
 
+线上地址：[papertrade-monitor.papertrade-monitor.workers.dev](https://papertrade-monitor.papertrade-monitor.workers.dev/)。代码仓库为 `bibi45c/papertrade-monitor`，私有源码与公开行情网站分别托管。
+
 ## 数据存放
 
 | 内容 | 位置 | 持续采集 |
@@ -63,7 +65,7 @@ npx wrangler deploy --dry-run
 
 ## Cloudflare 部署
 
-先由账户本人完成 Cloudflare 授权；不要在聊天里粘贴 API token 或密码。Wrangler 配置初版没有虚构的数据库 ID，只有创建真实 D1 后才添加绑定。
+先由账户本人完成 Cloudflare 授权；不要在聊天里粘贴 API token 或密码。登录命令只请求已批准的 `account:read`、`user:read`、`workers_scripts:write`、`d1:write`，Wrangler 另需后台访问以刷新登录；凭据加密保存，密钥放入系统钥匙串。部署接口需要 `workers_scripts:write`，`workers:write` 不能替代。Wrangler 配置中的数据库 ID 是实际创建的本项目 D1，重新运行 setup 会复用它。
 
 ```powershell
 npm run cf:login
@@ -75,6 +77,8 @@ npm run deploy
 `cloud:setup` 为本项目创建 `papertrade-monitor` D1，绑定名 `DB`，区域提示 `apac`，并运行首次迁移。生产与本地 SQLite 是两份独立数据；本地样本不会自动上传云端。
 
 部署后检查 `/api/health` 与 `/api/live`；等待至少两个 Cron 周期，再检查 `/api/history` 有持续样本。看到首页或者部署成功不等于后台已持续采集。
+
+新 Cron 最多可能需要 15 分钟传播。若默认网址连接超时，先对比系统 DNS 与 Cloudflare 公共 DNS 的解析；2026-10-10 验收遇到本机解析不一致，使用官方解析地址并正常校验证书后，线上 API 返回 200。不要据此关闭 HTTPS 验证；网站 HTTP 服务状态与访问端 DNS 状态分别排查。
 
 GitHub 检查工作流只运行测试与打包，不保存 Cloudflare OAuth 凭据、不自动发布。可用 Cloudflare 的 GitHub Builds 连接仓库，或在本地使用 `npm run deploy` 发布；连接新的 GitHub 应用需要账户本人授权。
 

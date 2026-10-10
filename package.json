@@ -11,7 +11,7 @@
     "dev": "node scripts/server.mjs",
     "monitor": "node scripts/monitor.mjs",
     "cf:dev": "wrangler dev",
-    "cf:login": "wrangler login",
+    "cf:login": "wrangler login --use-keyring --scopes account:read user:read workers_scripts:write d1:write",
     "cf:whoami": "wrangler whoami",
     "cloud:setup": "node scripts/cloudflare-setup.mjs",
     "deploy": "npm run build && wrangler deploy"

@@ -1,10 +1,31 @@
 {
-  "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "papertrade-monitor",
-  "main": "src/worker.mjs",
-  "compatibility_date": "2026-10-10",
-  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
-  "triggers": { "crons": ["* * * * *"] },
-  "observability": { "enabled": true },
-  "vars": { "APP_MODE": "public-read-only" }
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "papertrade-monitor",
+	"main": "src/worker.mjs",
+	"compatibility_date": "2026-10-10",
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"triggers": {
+		"crons": [
+			"* * * * *"
+		]
+	},
+	"observability": {
+		"enabled": true
+	},
+	"vars": {
+		"APP_MODE": "public-read-only"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "papertrade-monitor",
+			"database_id": "51c8c480-e709-4593-a2b9-7c5576aa8d30"
+		}
+	]
 }
