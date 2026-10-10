@@ -12,8 +12,17 @@ test('minute snapshots deduplicate and retain exact reward accumulator strings',
 });
 test('CSV exports nulls as empty and uses a validated UTC date', async () => {
   const db = database(); await saveSnapshot(db, snapshot(Date.parse('2026-10-10T14:00:00Z')));
-  const csv = await exportDay(db, '2026-10-10'); assert.ok(csv.includes('reward_accumulator')); assert.ok(csv.includes(',"0","0",,,\n')); assert.ok(!csv.includes('undefined'));
+  const csv = await exportDay(db, '2026-10-10'); assert.ok(csv.includes('reward_accumulator')); assert.ok(csv.includes(',"0","0",,,,,,,,\n')); assert.ok(!csv.includes('undefined'));
   await assert.rejects(() => exportDay(db, '2026-02-30')); await assert.rejects(() => exportDay(db, '"evil'));
+});
+test('execution queue history is extracted from existing JSON with old and failed samples kept null', async () => {
+  const db = database(), now = Date.parse('2026-10-10T14:00:00Z');
+  await saveSnapshot(db, snapshot(now));
+  await saveSnapshot(db, { ...snapshot(now + 60000), executionQueue: { available: true, sourceAt: now + 60000, queuedIntents: 123, submittedIntents: 2, capacityBlocks: 20, saturationPct: 10 } });
+  await saveSnapshot(db, { ...snapshot(now + 120000), executionQueue: { available: false, queuedIntents: 0 } });
+  const h = await getHistory(db, 1, now + 180000);
+  assert.equal(h.rows[0].execution_queued, null); assert.equal(h.rows[1].execution_queued, 123); assert.equal(h.rows[2].execution_queued, null);
+  assert.equal(h.rows[1].execution_source_at, now + 60000); assert.ok((await exportDay(db, '2026-10-10')).includes('execution_queued'));
 });
 test('retention deletes only records outside the 90-day window', async () => {
   const db = database(), now = Date.parse('2026-10-10T14:00:00Z');

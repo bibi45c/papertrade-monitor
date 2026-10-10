@@ -1,4 +1,4 @@
-import { makePlan, emissionRate } from './model.mjs';
+import { makePlan, emissionRate, executionQueueStatus } from './model.mjs';
 const $ = id => document.getElementById(id);
 let snapshot = null, plan = null, history = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
 const number = (value, digits = 2) => value === null || value === undefined || !Number.isFinite(value) ? '不可用' : value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -19,7 +19,16 @@ function render() {
   set('updated', time(s.collectedAt)); set('supply', compact(p?.supply)); set('mintRate', number(emissionRate(p), 3)); set('pending', compact(p?.pendingRewards) + ' U'); set('lp', compact(s.balances?.lp) + ' U');
   set('capNote', '超额分配阈值 ' + compact(p?.cap) + ' U'); set('staked', compact(p?.staked));
   set('stakeNote', p && p.supply > 0 ? '占供应 ' + number(p.staked / p.supply * 100, 4) + '%' : '不可用');
-  set('queue', s.queue ? compact(s.queue.total) + ' U' : '不可用'); set('queueNote', s.queue ? s.queue.count + ' 笔兑付等待；提交队列未接入' : '兑付状态未知');
+  set('queue', s.queue ? compact(s.queue.total) + ' U' : '不可用'); set('queueNote', s.queue ? s.queue.count + ' 笔兑付等待；与下单队列分别采集' : '兑付状态未知');
+  const q = s.executionQueue, execution = executionQueueStatus(s);
+  set('executionState', !networkHealthy || !execution.fresh ? '过期 / 不可用' : execution.busy ? '拥堵 · 手动方案已阻止' : '快照有效 · ' + age(q.sourceAt));
+  set('executionCount', q?.available ? number(q.queuedIntents, 0) + ' / ' + number(q.submittedIntents, 0) : '不可用');
+  set('executionBlocks', q?.available ? number(q.capacityBlocks, 0) + ' 块' : '不可用');
+  set('executionPressure', q?.available ? number(q.saturationPct, 1) + '%' : '不可用');
+  set('executionOldest', execution.fresh ? number(execution.oldestPreviewSeconds, 1) + ' s' : '不可用');
+  set('executionNote', execution.reason + '。个人排名未接入；请求从预览消失不证明已成交。');
+  const actionNames = { openPosition: '开仓', closePositions: '平仓', paperStake: '质押', paperUnstake: '解除质押', paperClaim: '领取分红', paperDistribute: '分配', registerSessionKey: '会话授权', withdrawToCore: '提现' };
+  $('executionPreview').replaceChildren(...(q?.available && q.preview.length ? q.preview.map((p, idx) => { const tr = el('tr'); [idx + 1, actionNames[p.action] ?? p.action, '类别 ' + p.priorityClass, p.estimatedGas, age(p.acceptedAt)].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', q?.available ? '该快照队列为空' : '无有效快照，不能当作没有排队'); td.colSpan = 5; tr.append(td); return tr; })()]));
   set('notice', !fresh ? '公开来源故障或超过 30 秒，方案已阻止。旧值仅供查看，不能视为当前行情。' : p?.staked === 0 ? '当前官方质押供应为 0；待分配奖励还不能用于证明个人回本。PAPER 可交易市场价尚未核实。' : 'PAPER 可交易市场价尚未核实。请以实际分配指数与领取流水判断收益；待分配奖励没有计为现金收入。');
   $('markets').replaceChildren(...s.markets.map(m => {
     const tr = el('tr'), diff = m.paperMid && m.bid && m.ask ? (m.paperMid / ((m.bid + m.ask) / 2) - 1) * 10000 : null;
@@ -42,7 +51,7 @@ function renderPlan() {
   $('copyPlan').disabled = !plan.ready;
   $('orderParams').replaceChildren();
   if (plan.scenarios) {
-    const fields = [['匹配数量', number(plan.quantity, 5) + ' ' + plan.coin], ['Paper 名义仓位', money(plan.notional)], ['实际 Paper 保证金', money(plan.paperMargin)], ['HL 进场 VWAP', money(plan.hedgeEntry)], ['HL 初始保证金估计', money(plan.marginMinimum) + ' + 缓冲'], ['止损 / 止盈价格变动', number(plan.stopMove * 100, 4) + '%'], ['硬清算距离估计', number(plan.bustDistance * 100, 4) + '%'], ['质押最低数量', compact(plan.staking.minimumPaper) + ' PAPER']];
+    const fields = [['匹配数量', number(plan.quantity, 5) + ' ' + plan.coin], ['Paper 名义仓位', money(plan.notional)], ['实际 Paper 保证金', money(plan.paperMargin)], ['HL 进场 VWAP', money(plan.hedgeEntry)], ['HL 初始保证金估计', money(plan.marginMinimum) + ' + 缓冲'], ['单腿每 1 bps 敞口', money(plan.latencyExposurePerBps)], ['止损 / 止盈价格变动', number(plan.stopMove * 100, 4) + '%'], ['硬清算距离估计', number(plan.bustDistance * 100, 4) + '%'], ['质押最低数量', compact(plan.staking.minimumPaper) + ' PAPER']];
     for (const [name, value] of fields) { const row = el('div'); row.append(el('dt', name), el('dd', value)); $('orderParams').append(row); }
     $('branches').replaceChildren(...plan.scenarios.map(b => { const card = el('article', undefined, 'branch'); card.append(el('h3', b.name), el('div', (b.pnl >= 0 ? '+' : '') + money(b.pnl), 'pnl ' + pnlClass(b.pnl))); for (const [name, value] of [['Paper 结算盈亏', money(b.paper.payout)], ['HL 盈亏（退出偏差已计）', money(b.hedgePnl)], ['HL 开平手续费', money(b.fees)], ['预计资金费收入', money(b.funding)], ['PAPER 数量', compact(b.mintedPaper)], ['亏损分支每枚成本', b.costPerPaper === null ? '未铸币' : number(b.costPerPaper, 8) + ' U']]) { const row = el('div', undefined, 'row'); row.append(el('span', name), el('span', value)); card.append(row); } return card; }));
     const prob = Number($('lossProbability').value) / 100;
@@ -56,7 +65,8 @@ function renderPlan() {
       if (validRows.length >= 2) {
         const first = validRows[0], last = validRows.at(-1), delta = Number(BigInt(last.reward_accumulator) - BigInt(first.reward_accumulator)) / 1e27;
         const hours = (last.paper_source_at - first.paper_source_at) / 3600000;
-        if (delta > 0 && hours > 0) income = ` 若未来分配速度等于本区间，持续质押的成本回收时间外推约 ${number(cost / (delta / hours), 1)} 小时；该速度可能变化。`;
+        if (delta > 0 && hours > 0 && hours < 24) income = ` 分红观测仅覆盖 ${number(hours, 1)} 小时，启动分配与稀释可能变化，暂不外推现金回本时间。`;
+        else if (delta > 0 && hours >= 24) income = ` 若未来分配速度等于本区间，持续质押的成本回收时间外推约 ${number(cost / (delta / hours), 1)} 小时；24 小时样本也不保证未来速度。`;
         else income = ' 本区间尚无正的分配指数增长，暂无可支持现金回本时间的观测。';
       } else income = ' 尚缺连续分红样本，现金回本时间不可用。';
       set('expected', message + income);
@@ -66,6 +76,8 @@ function renderPlan() {
 }
 
 function renderHistory() {
+  const queues = history.filter(r => Number.isFinite(r.execution_queued));
+  set('executionHistory', queues.length ? `当前历史区间有 ${queues.length} 个下单队列样本，等待笔数 ${number(Math.min(...queues.map(r => r.execution_queued)), 0)}–${number(Math.max(...queues.map(r => r.execution_queued)), 0)}；最后一条 ${time(queues.at(-1).execution_source_at)}。CSV 含队列字段。` : '本区间尚无下单队列历史；旧样本的缺失值没有补成零。');
   const valid = history.filter(r => r.paper_supply !== null && Number.isFinite(r.paper_supply));
   set('historyState', history.length ? history.length + ' 个样本 · ' + time(history[0].collected_at) + ' 起' : '还没有历史样本');
   if (valid.length >= 2) {

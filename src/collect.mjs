@@ -1,3 +1,4 @@
+import { readExecutionQueue } from './execution-queue.mjs';
 export const URLS = Object.freeze({ paper: 'https://exchange.papertrade.xyz', info: 'https://api.hyperliquid.xyz/info', rpc: 'https://rpc.hyperliquid.xyz/evm' });
 const BBO = '0x000000000000000000000000000000000000080e';
 const raw = value => { if (typeof value !== 'string' || !/^-?\d+$/.test(value)) throw new Error('Invalid raw amount'); return Number(BigInt(value)) / 1e18; };
@@ -47,10 +48,11 @@ async function fetchJson(url, body, fetcher) {
   return response.json();
 }
 
-export async function collect({ fetcher = fetch, now = Date.now() } = {}) {
+export async function collect({ fetcher = fetch, now = Date.now(), pressureReader = () => readExecutionQueue({ fetcher }) } = {}) {
   const result = { version: 1, collectedAt: now, sources: {}, markets: [], paper: null, balances: null, trading: null, queue: null,
-    executionQueue: { available: false, reason: '提交交易等待需要个人 intent 与账户队列，当前只读取公共兑付队列。' }, paperMarketPrice: { value: null, reason: '未核实 PAPER 可交易市场，分红和铸币成本不能替代市场报价。' } };
+    executionQueue: { available: false, reason: '全球执行队列尚未收到有效状态；个人排名未查询。' }, paperMarketPrice: { value: null, reason: '启动期 PAPER 不可转让；未核实可交易市场，分红和铸币成本不能替代市场报价。' } };
   const jobs = [
+    ['executionQueue', pressureReader],
     ['summary', async () => parseSummary(await fetchJson(URLS.paper + '/query/protocol/summary', undefined, fetcher))],
     ['trading', async () => parseTrading(await fetchJson(URLS.paper + '/state/trading', undefined, fetcher))],
     ['queue', async () => parseQueue(await fetchJson(URLS.paper + '/query/protocol/queue-summary', undefined, fetcher))],
@@ -78,6 +80,7 @@ export async function collect({ fetcher = fetch, now = Date.now() } = {}) {
   result.rewardIndex = result.rewardAccumulatorRaw === null ? null : Number(BigInt(result.rewardAccumulatorRaw)) / 1e27;
   result.latestDistribution = values.paperActivity?.distribution ?? null;
   result.trading = values.trading ?? null; result.queue = values.queue ?? null;
+  result.executionQueue = values.executionQueue ?? { available: false, reason: result.sources.executionQueue.error };
   if (result.trading) delete result.trading.raw;
   if (result.queue) delete result.queue.raw;
   const coins = ['BTC', 'ETH', 'HYPE'];

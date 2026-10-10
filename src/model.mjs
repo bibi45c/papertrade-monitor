@@ -4,6 +4,15 @@ export const DEFAULTS = Object.freeze({
 });
 
 const positive = x => Number.isFinite(x) && x > 0;
+export function executionQueueStatus(snapshot, now = Date.now()) {
+  const q = snapshot?.executionQueue, source = snapshot?.sources?.executionQueue;
+  const fresh = !!q?.available && source?.ok === true && Number.isFinite(q.sourceAt) && now - q.sourceAt <= 15000 && q.sourceAt <= now + 5000;
+  if (!fresh) return { fresh: false, busy: false, reason: '下单队列过期或不可用，不能据此安排两腿成交' };
+  const oldest = q.preview.length ? Math.max(...q.preview.map(p => Math.max(0, now - p.acceptedAt) / 1000)) : 0;
+  const busy = q.capacityBlocks > 3 || q.saturationPct >= 95 || oldest > 30;
+  return { fresh: true, busy, oldestPreviewSeconds: oldest,
+    reason: busy ? '下单队列拥堵：容量折算超过 3 块、提交压力 ≥95% 或前 10 条等待超过 30 秒；这是监控的保守阈值' : '全球队列快照有效；个人成交位置与时间仍未确认' };
+}
 export function emissionRate(paper) {
   if (!paper || !positive(paper.rate) || !positive(paper.decay) || !Number.isFinite(paper.trackedLp) || !Number.isFinite(paper.tailProgress)) return null;
   if (paper.trackedLp < paper.cliff) return paper.rate;
@@ -74,6 +83,8 @@ export function makePlan(snapshot, coin, input = {}) {
   if (!queueEmpty) reasons.push('兑付队列非空或状态未知，收益到账时间无法确定');
   if (reasons.length) return { ready: false, reasons, warnings, coin, config };
   const quantity = roundSize(config.margin * config.paperLeverage / paperMid, market.szDecimals), notional = quantity * paperMid;
+  const execution = executionQueueStatus(snapshot, now);
+  if (!execution.fresh || execution.busy) reasons.push(execution.reason);
   const paperMargin = notional / config.paperLeverage, requestedNotional = config.margin * config.paperLeverage;
   const hedgeLong = !config.paperLong, hedgeEntry = vwap(hedgeLong ? asks : bids, quantity);
   if (quantity <= 0 || hedgeEntry === null) reasons.push('订单簿不足以覆盖该数量');
@@ -112,6 +123,7 @@ export function makePlan(snapshot, coin, input = {}) {
   warnings.push('硬清算距离按当前市场 buffer 估算；以开仓后平台显示的该仓位 bust price 为准。');
   return { ready: reasons.length === 0, reasons, warnings, coin, config, quantity, notional, requestedNotional, paperMargin, hedgeEntry, hedgeLong, stopMove, bustDistance, rate, marginMinimum, scenarios,
     prices: { paperEntry: paperMid, hedgeEntry, paperAt, bookAt },
+    execution, latencyExposurePerBps: notional / 10000,
     staking: { allowed: !snapshot.trading.blockedActions.includes('paperStake'), minimumPaper: snapshot.trading.minimumPaperStake },
   };
 }

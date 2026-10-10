@@ -2,8 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { emissionRate, paperPnl, makePlan, vwap, roundSize } from '../src/model.mjs';
 const instrument = { id: 0, symbol: 'BTC', rateMultiplier: 15000, positionMultiplier: 814.598, referenceNotional: 100000, baseRate: .1, bustBuffer: .0005, openable: true, maxLeverage: 1000, maxPositionNotional: 1e7, longOi: 100, shortOi: 100, longCap: 1e6, shortCap: 1e6 };
-function sample() { const now = Date.now(); return { paper: { rate: 100, trackedLp: 1e6, cliff: 2e6, decay: 120e6, tailProgress: 0 }, sources: Object.fromEntries(['summary', 'queue', 'trading', 'context'].map(k => [k, { ok: true, at: now }])),
+function sample() { const now = Date.now(); return { paper: { rate: 100, trackedLp: 1e6, cliff: 2e6, decay: 120e6, tailProgress: 0 }, sources: Object.fromEntries(['summary', 'queue', 'trading', 'context', 'executionQueue'].map(k => [k, { ok: true, at: now }])),
   trading: { block: 100, paused: false, blockedActions: [], instruments: [instrument], minimumMargin: 10, minimumOpenNotional: 1000, minimumPaperStake: 1000, maximumNetOpenInterest: 25e6 }, queue: { count: 0, total: 0 },
+  executionQueue: { available: true, sourceAt: now, capacityBlocks: 0, saturationPct: 0, preview: [] },
   markets: [{ coin: 'BTC', paperMid: 100000, paperAt: now, paperBlock: '0x64', bookAt: now, szDecimals: 5, maxLeverage: 40, mark: 100000, funding: .0000125, bids: [{ px: '99999', sz: '10' }], asks: [{ px: '100001', sz: '10' }] }] }; }
 
 test('mint curve depends on high-water tail progress and does not reset at LP cap', () => {
@@ -56,4 +57,11 @@ test('OI capacity uses base asset units for the side cap', () => {
 });
 test('fractional leverage is rejected because both venues require integer leverage', () => {
   assert.equal(makePlan(sample(), 'BTC', { paperLeverage: 20.5 }).ready, false);
+});
+test('execution queue gates crowded or stale plans while retaining both financial branches', () => {
+  const s = sample(); s.executionQueue.capacityBlocks = 4;
+  const busy = makePlan(s, 'BTC'); assert.equal(busy.ready, false); assert.equal(busy.scenarios.length, 2); assert.equal(busy.latencyExposurePerBps, 2);
+  const stale = sample(); stale.executionQueue.sourceAt -= 16000; assert.equal(makePlan(stale, 'BTC').ready, false);
+  const unknown = sample(); unknown.executionQueue = { available: false }; assert.equal(makePlan(unknown, 'BTC').ready, false);
+  const oldPreview = sample(); oldPreview.executionQueue.preview = [{ acceptedAt: Date.now() - 31000 }]; assert.equal(makePlan(oldPreview, 'BTC').ready, false);
 });

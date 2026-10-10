@@ -55,7 +55,7 @@ const deadline = Date.now() + 15 * 60000;
 let history;
 for (;;) {
   history = await json('/api/history?hours=1');
-  const rows = history.rows.filter(r => r.paper_supply !== null && r.btc_mid !== null && r.eth_mid !== null);
+  const rows = history.rows.filter(r => r.paper_supply !== null && r.btc_mid !== null && r.eth_mid !== null && Number.isFinite(r.execution_queued));
   const first = rows[0], last = rows.at(-1);
   console.log(JSON.stringify({ check: 'cron', samples: history.rows.length, validSamples: rows.length,
     firstAt: first?.collected_at ?? null, lastAt: last?.collected_at ?? null }));

@@ -20,6 +20,12 @@
       <article><span>兑付队列</span><strong id="queue">—</strong><small id="queueNote">金额与人数分别记录</small></article>
       <article><span>实际质押供应</span><strong id="staked">—</strong><small id="stakeNote">—</small></article>
     </section>
+    <section class="panel" aria-label="全球下单队列"><div class="section-heading"><div><p class="eyebrow">EXECUTION QUEUE</p><h2>下单等待与执行压力</h2></div><span id="executionState" class="subtle">等待官方状态流</span></div>
+      <div class="history-metrics"><div><span>全球等待 / 已提交</span><strong id="executionCount">—</strong><small>笔数，包含交易、质押等请求</small></div><div><span>Gas 容量折算</span><strong id="executionBlocks">—</strong><small>按整块容量计算，不能当作成交倒计时</small></div><div><span>已提交 Gas 压力</span><strong id="executionPressure">—</strong><small>0% 也可能有大量请求仍在队列</small></div><div><span>前 10 条最大等待</span><strong id="executionOldest">—</strong><small>只描述队列预览，不代表全队列最大值</small></div></div>
+      <div class="table-scroll"><table><thead><tr><th>执行顺序预览</th><th>请求类型</th><th>优先级类别</th><th>预估 Gas</th><th>已等待</th></tr></thead><tbody id="executionPreview"></tbody></table></div>
+      <p id="executionNote" class="footnote">全球下单队列与上方兑付队列分别采集。未查询个人钱包排名；是否进下一块还取决于执行资格和 Gas。</p>
+      <p id="executionHistory" class="footnote">等待队列历史；旧样本没有该字段时保留缺失。</p>
+    </section>
     <section class="panel markets"><div class="section-heading"><div><p class="eyebrow">MARKET SNAPSHOT</p><h2>行情与差价</h2></div><span id="priceStatus" class="subtle">各来源独立标记时间</span></div><div class="table-scroll"><table><thead><tr><th>资产</th><th>HL 买一 / 卖一</th><th>Paper 链上中间价</th><th>中间价差</th><th>HL 标记价</th><th>小时资金费</th><th>数据年龄</th></tr></thead><tbody id="markets"></tbody></table></div><p class="footnote">差价 = Paper 中间价 ÷ HL 买卖中间价 − 1。两次观测时间可能不同；下方方案另按订单簿深度计算实际进场价格。资金费为当前小时费率，正数时多方付给空方。</p></section>
     <div class="workspace">
       <section class="panel controls"><div class="section-heading"><div><p class="eyebrow">HEDGE CALCULATOR</p><h2>你的 1000 U 方案</h2></div></div>

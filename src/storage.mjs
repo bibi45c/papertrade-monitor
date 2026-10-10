@@ -1,4 +1,7 @@
 export const columns = ['collected_at', 'paper_source_at', 'paper_supply', 'staked_supply', 'pending_rewards', 'reward_accumulator', 'lp_balance', 'queue_debt', 'queue_count', 'btc_mid', 'eth_mid', 'hype_mid'];
+const queueFields = { execution_source_at: 'sourceAt', execution_queued: 'queuedIntents', execution_submitted: 'submittedIntents', execution_capacity_blocks: 'capacityBlocks', execution_saturation_pct: 'saturationPct' };
+export const exportColumns = [...columns, ...Object.keys(queueFields)];
+const historySelect = [...columns, ...Object.entries(queueFields).map(([name, field]) => `CASE WHEN json_extract(payload, '$.executionQueue.available') = 1 THEN json_extract(payload, '$.executionQueue.${field}') END AS ${name}`)].join(',');
 
 export async function saveSnapshot(db, snapshot) {
   if (!db) return false;
@@ -18,7 +21,7 @@ export async function latestSnapshot(db) {
 export async function getHistory(db, hours = 24, now = Date.now()) {
   const bounded = Math.min(2160, Math.max(1, Number.isFinite(hours) ? hours : 24));
   const bucket = Math.max(60000, Math.ceil(bounded * 60 / 1440) * 60000);
-  const rows = await db.prepare(`SELECT ${columns.join(',')} FROM snapshots WHERE collected_at IN (SELECT MAX(collected_at) FROM snapshots WHERE collected_at >= ? GROUP BY CAST(collected_at / ? AS INTEGER)) ORDER BY collected_at`).bind(now - bounded * 3600000, bucket).all();
+  const rows = await db.prepare(`SELECT ${historySelect} FROM snapshots WHERE collected_at IN (SELECT MAX(collected_at) FROM snapshots WHERE collected_at >= ? GROUP BY CAST(collected_at / ? AS INTEGER)) ORDER BY collected_at`).bind(now - bounded * 3600000, bucket).all();
   return { hours: bounded, bucketMs: bucket, rows: rows.results ?? [] };
 }
 
@@ -30,7 +33,7 @@ export async function exportDay(db, day) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('日期必须为 YYYY-MM-DD (UTC)');
   const from = Date.parse(day + 'T00:00:00Z');
   if (!Number.isFinite(from) || new Date(from).toISOString().slice(0, 10) !== day) throw new Error('无效日期');
-  const data = await db.prepare(`SELECT ${columns.join(',')} FROM snapshots WHERE collected_at >= ? AND collected_at < ? ORDER BY collected_at LIMIT 1440`).bind(from, from + 86400000).all();
+  const data = await db.prepare(`SELECT ${historySelect} FROM snapshots WHERE collected_at >= ? AND collected_at < ? ORDER BY collected_at LIMIT 1440`).bind(from, from + 86400000).all();
   const escape = x => x === null || x === undefined ? '' : `"${String(x).replaceAll('"', '""')}"`;
-  return columns.join(',') + '\n' + (data.results ?? []).map(r => columns.map(k => escape(r[k])).join(',')).join('\n') + '\n';
+  return exportColumns.join(',') + '\n' + (data.results ?? []).map(r => exportColumns.map(k => escape(r[k])).join(',')).join('\n') + '\n';
 }

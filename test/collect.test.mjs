@@ -14,14 +14,15 @@ test('BBO decoding reads two ABI words with the per-instrument scale', () => {
   assert.equal(parseBbo(hex, 10).paperMid, 80000.5); assert.throws(() => parseBbo('0x', 10));
 });
 test('network failures are recorded per source, with null protocol metrics', async () => {
-  const s = await collect({ fetcher: async () => { throw new Error('Disconnected'); } });
+  const s = await collect({ pressureReader: async () => { throw new Error('Disconnected'); }, fetcher: async () => { throw new Error('Disconnected'); } });
   assert.equal(s.paper, null); assert.equal(s.queue, null); assert.equal(s.sources.summary.ok, false);
   assert.equal(s.sources.paperBbo.ok, false); assert.equal(s.paperMarketPrice.value, null);
+  assert.equal(s.executionQueue.available, false); assert.equal(s.sources.executionQueue.ok, false);
 });
 test('complete collection pins BBO reads and retries one transient RPC error', async () => {
   const at = Date.now(), seenBlocks = []; let batches = 0;
   const tuple = [0, 'BTC', 0, '10', true, false, false, false, false, null, null, null, units(15000), units(814), 1000, units(10000000), '500000000000000', units(0), units(100000), units(0), units(0), units(1000000), units(1000000)];
-  const s = await collect({ fetcher: async (url, request) => {
+  const s = await collect({ pressureReader: async () => ({ available: true, sourceAt: at, block: '123', queuedIntents: 0 }), fetcher: async (url, request) => {
     const body = request.body ? JSON.parse(request.body) : null; let payload;
     if (url.endsWith('/query/protocol/summary')) payload = summary();
     else if (url.endsWith('/state/trading')) payload = { schemaVersion: 1, tradingPaused: false, indexedThroughBlock: 123, minimumTradeSizeRaw: units(10), minimumOpenNotionalRaw: units(1000), instruments: [tuple], intake: [at, units(1000), units(25000000), []] };
@@ -36,4 +37,5 @@ test('complete collection pins BBO reads and retries one transient RPC error', a
   } });
   assert.equal(s.markets[0].paperMid, 80000.5); assert.equal(s.sources.paperBbo.ok, true);
   assert.equal(s.rewardAccumulatorRaw, units(100)); assert.deepEqual(seenBlocks, ['0x7b', '0x7b']);
+  assert.equal(s.executionQueue.available, true); assert.equal(s.sources.executionQueue.at, at);
 });
