@@ -80,6 +80,8 @@ npm run deploy
 
 新 Cron 最多可能需要 15 分钟传播。若默认网址连接超时，先对比系统 DNS 与 Cloudflare 公共 DNS 的解析；2026-10-10 验收遇到本机解析不一致，使用官方解析地址并正常校验证书后，线上 API 返回 200。不要据此关闭 HTTPS 验证；网站 HTTP 服务状态与访问端 DNS 状态分别排查。
 
+`npm run cloud:verify` 只读验收线上行情、两条以上的新鲜历史记录、CSV 和拒绝 POST。最多等待 15 分钟，每分钟检查一次。如已确认本机解析异常，可运行 `npm run cloud:verify -- --public-dns`；这只为该次请求使用 Cloudflare 公共 DNS，保留域名和 TLS 校验，不修改系统网络设置，不能证明普通浏览器的解析已恢复。
+
 GitHub 检查工作流只运行测试与打包，不保存 Cloudflare OAuth 凭据、不自动发布。可用 Cloudflare 的 GitHub Builds 连接仓库，或在本地使用 `npm run deploy` 发布；连接新的 GitHub 应用需要账户本人授权。
 
 ## 验收和恢复
