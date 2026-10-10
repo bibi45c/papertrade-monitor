@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Papertrade 与 Hyperliquid 公开行情、兑付队列、PAPER 分红和对冲成本监控。">
+  <title>Papertrade × Hyperliquid · 监控台</title>
+  <link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <main>
+    <header class="topbar"><a class="brand" href="/">P<span>×</span>H <small>MONITOR</small></a><span class="tag">公开数据 · 只读测算</span><span id="connection" class="status">正在连接</span></header>
+    <section class="hero"><div><p class="eyebrow">PAPERTRADE / HYPERLIQUID</p><h1>看清成本，再做对冲。</h1><p class="intro">跟踪链上报价、成交深度与兑付队列。把拿到 PAPER 的成本，和分红现金流放在同一张表里。</p></div><div class="clock"><span>最近采集 · 新加坡时间</span><strong id="updated">—</strong><small>网页每 10 秒刷新 · 后台每分钟记录</small></div></section>
+    <div id="notice" class="notice" role="status">等待公开数据。个人余额和账户费率尚未接入。</div>
+    <section class="metrics" aria-label="协议概览">
+      <article><span>PAPER 总供应</span><strong id="supply">—</strong><small id="supplyNote">铸币会稀释份额</small></article>
+      <article><span>当前铸币率</span><strong id="mintRate">—</strong><small>PAPER / 合格亏损 1 U</small></article>
+      <article><span>协议待分配奖励</span><strong id="pending">—</strong><small>待分配金额，尚未计为你的现金收入</small></article>
+      <article><span>LP 可用余额</span><strong id="lp">—</strong><small id="capNote">超额分配阈值 —</small></article>
+      <article><span>兑付队列</span><strong id="queue">—</strong><small id="queueNote">金额与人数分别记录</small></article>
+      <article><span>实际质押供应</span><strong id="staked">—</strong><small id="stakeNote">—</small></article>
+    </section>
+    <section class="panel markets"><div class="section-heading"><div><p class="eyebrow">MARKET SNAPSHOT</p><h2>行情与差价</h2></div><span id="priceStatus" class="subtle">各来源独立标记时间</span></div><div class="table-scroll"><table><thead><tr><th>资产</th><th>HL 买一 / 卖一</th><th>Paper 链上中间价</th><th>中间价差</th><th>HL 标记价</th><th>小时资金费</th><th>数据年龄</th></tr></thead><tbody id="markets"></tbody></table></div><p class="footnote">差价 = Paper 中间价 ÷ HL 买卖中间价 − 1。两次观测时间可能不同；下方方案另按订单簿深度计算实际进场价格。资金费为当前小时费率，正数时多方付给空方。</p></section>
+    <div class="workspace">
+      <section class="panel controls"><div class="section-heading"><div><p class="eyebrow">HEDGE CALCULATOR</p><h2>你的 1000 U 方案</h2></div></div>
+        <form id="config">
+          <div class="field-row"><label>对冲资产<select id="coin"><option>BTC</option><option>ETH</option></select></label><label>Paper 方向<select id="direction"><option value="long">做多 / HL 做空</option><option value="short">做空 / HL 做多</option></select></label></div>
+          <div class="field-row"><label>Paper 保证金 · U<input id="margin" type="number" min="10" value="1000"></label><label>Paper 杠杆<input id="paperLeverage" type="number" min="1" max="1000" value="20"></label></div>
+          <div class="field-row"><label>HL 杠杆<input id="hedgeLeverage" type="number" min="1" max="40" value="10"></label><label>Paper 原始止损 / 止盈 · U<input id="lossBudget" type="number" min="1" value="100"></label></div>
+          <div class="field-row"><label>HL Taker 费率 · bps<input id="takerFeeBps" type="number" step="0.1" min="0" value="4.5"></label><label>退出价偏差预算 · bps<input id="exitSlippageBps" type="number" min="0" step="0.1" value="1"></label></div>
+          <div class="field-row"><label>假设持仓时间 · 小时<input id="holdingHours" type="number" min="0" step="0.5" value="1"></label><label>假设 Paper 亏损概率 · %<input id="lossProbability" type="number" min="1" max="100" step="1" value="50"></label></div>
+          <p class="footnote">费率与概率由你输入，未读取个人账户费率，也未验证方向概率。默认 50% 只用于比较成本。</p>
+        </form>
+        <div id="planState" class="plan-state">等待报价</div><dl id="orderParams" class="params"></dl>
+        <button id="copyPlan" type="button" disabled>复制手动下单方案</button><span id="copyResult" class="subtle" role="status"></span>
+      </section>
+      <section class="panel scenarios"><div class="section-heading"><div><p class="eyebrow">BOTH SIDES OF THE TRADE</p><h2>涨跌两边都算</h2></div><span class="tag">纸面测算</span></div>
+        <div id="branches" class="branches"><p class="subtle">等待有效行情和交易参数。</p></div>
+        <div id="expected" class="summary-box">先比较两种结果，再讨论回本。</div>
+        <div class="strategy"><h3>赚钱思路</h3><ol><li>用同一资产、相同数量的反向仓位，降低拿 PAPER 的组合损失。</li><li>当前资金费适合时，让 HL 一侧收资金费，并计入两种结果。</li><li>用连续质押期间的分红指数变化评估收益，比较发行稀释与成本。</li></ol><p>两边共用 Hyperliquid 报价来源；账面差价需要通过实际成交和最终结算才能兑现。Paper 盈利折扣、硬清算与提交延迟都会破坏理想对冲。</p></div>
+        <details><summary>计算假设与执行限制</summary><ul id="warnings"></ul></details>
+      </section>
+    </div>
+    <section class="panel history"><div class="section-heading"><div><p class="eyebrow">CASH FLOW & DILUTION</p><h2>分红、稀释与历史</h2></div><select id="historyHours" aria-label="历史区间"><option value="1">最近 1 小时</option><option value="24" selected>最近 24 小时</option><option value="168">最近 7 天</option><option value="2160">最近 90 天</option></select></div>
+      <div class="history-metrics"><div><span>最近一次分配</span><strong id="distribution">—</strong><small id="distributionNote">—</small></div><div><span>区间内每 10 万 PAPER 分配</span><strong id="periodDividend">—</strong><small>假设该区间一直质押 · 分配不等于已提现</small></div><div><span>区间供应增长</span><strong id="dilution">—</strong><small>通过采集记录比较；空缺保持空缺</small></div><div><span>PAPER 市场价格</span><strong>未核实</strong><small>铸币成本、奖励份额均不能代替报价</small></div></div>
+      <div class="chart-heading"><span>供应变化</span><span class="subtle" id="historyState">正在读取历史</span></div><svg id="historyChart" viewBox="0 0 1000 180" role="img" aria-label="PAPER 供应历史曲线"><text x="500" y="90" text-anchor="middle" fill="#88958f">至少需要两个有效样本</text></svg>
+      <div class="export"><label>导出日期 · UTC<input id="exportDay" type="date"></label><a id="exportLink" class="button" href="/api/export.csv">下载当日 CSV</a><span class="subtle">云端 D1 保存 90 天明细；本地开发保存到 data/history.sqlite。</span></div>
+    </section>
+    <details class="panel sources"><summary>数据来源与状态</summary><div id="sources"></div></details>
+    <footer><span>Papertrade × Hyperliquid Monitor</span><nav><a href="https://exchange.papertrade.xyz/house" target="_blank" rel="noopener">Paper 协议</a><a href="https://docs.papertrade.xyz/#/learn/wins-losses" target="_blank" rel="noopener">结算规则</a><a href="https://app.hyperliquid.xyz" target="_blank" rel="noopener">Hyperliquid</a></nav></footer>
+  </main>
+</body>
+</html>

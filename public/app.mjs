@@ -1,0 +1,109 @@
+import { makePlan, emissionRate } from './model.mjs';
+const $ = id => document.getElementById(id);
+let snapshot = null, plan = null, history = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
+const number = (value, digits = 2) => value === null || value === undefined || !Number.isFinite(value) ? '不可用' : value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+const money = value => number(value) + (Number.isFinite(value) ? ' U' : '');
+const compact = value => Number.isFinite(value) ? new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(value) : '不可用';
+const time = value => Number.isFinite(value) ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Singapore', hour12: false }) : '不可用';
+const age = value => Number.isFinite(value) ? Math.max(0, Math.round((Date.now() - value) / 1000)) + ' s' : '不可用';
+const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
+const set = (id, text) => { $(id).textContent = text; };
+const pnlClass = value => Number.isFinite(value) && value >= 0 ? 'pos' : 'neg';
+function config() { const c = {}; for (const k of ['margin', 'paperLeverage', 'hedgeLeverage', 'lossBudget', 'takerFeeBps', 'exitSlippageBps', 'holdingHours']) c[k] = Number($(k).value); c.paperLong = $('direction').value === 'long'; return c; }
+
+function render() {
+  if (!snapshot) return;
+  const s = snapshot, p = s.paper;
+  const fresh = networkHealthy && ['summary', 'queue', 'trading', 'context', 'paperBbo'].every(k => s.sources[k]?.ok && Date.now() - s.sources[k].at <= 30000);
+  $('connection').className = 'status ' + (fresh ? 'ok' : 'bad'); set('connection', fresh ? '已连接 · ' + age(s.completedAt) : '数据过期 / 来源故障');
+  set('updated', time(s.collectedAt)); set('supply', compact(p?.supply)); set('mintRate', number(emissionRate(p), 3)); set('pending', compact(p?.pendingRewards) + ' U'); set('lp', compact(s.balances?.lp) + ' U');
+  set('capNote', '超额分配阈值 ' + compact(p?.cap) + ' U'); set('staked', compact(p?.staked));
+  set('stakeNote', p && p.supply > 0 ? '占供应 ' + number(p.staked / p.supply * 100, 4) + '%' : '不可用');
+  set('queue', s.queue ? compact(s.queue.total) + ' U' : '不可用'); set('queueNote', s.queue ? s.queue.count + ' 笔兑付等待；提交队列未接入' : '兑付状态未知');
+  set('notice', !fresh ? '公开来源故障或超过 30 秒，方案已阻止。旧值仅供查看，不能视为当前行情。' : p?.staked === 0 ? '当前官方质押供应为 0；待分配奖励还不能用于证明个人回本。PAPER 可交易市场价尚未核实。' : 'PAPER 可交易市场价尚未核实。请以实际分配指数与领取流水判断收益；待分配奖励没有计为现金收入。');
+  $('markets').replaceChildren(...s.markets.map(m => {
+    const tr = el('tr'), diff = m.paperMid && m.bid && m.ask ? (m.paperMid / ((m.bid + m.ask) / 2) - 1) * 10000 : null;
+    const fields = [m.coin, Number.isFinite(m.bid) ? number(m.bid, m.coin === 'HYPE' ? 4 : 2) + ' / ' + number(m.ask, m.coin === 'HYPE' ? 4 : 2) : '不可用', m.coin === 'HYPE' ? 'Paper 暂无该市场' : number(m.paperMid), diff === null ? '—' : number(diff, 3) + ' bps', number(m.mark), Number.isFinite(m.funding) ? number(m.funding * 100, 6) + '%' : '不可用', 'HL ' + age(m.bookAt) + (m.paperAt ? ' / P ' + age(m.paperAt) : '')];
+    fields.forEach((v, i) => tr.append(el('td', v, i === 5 && Number.isFinite(m.funding) ? pnlClass(m.funding) : undefined))); return tr;
+  }));
+  $('sources').replaceChildren(...Object.entries(s.sources).map(([name, source]) => { const row = el('div', undefined, 'source'); row.append(el('span', name), el('span', source.ok ? age(source.at) : source.error, source.ok && Date.now() - source.at <= 30000 ? 'pos' : 'neg')); return row; }));
+  set('distribution', s.latestDistribution ? time(s.latestDistribution.at) : s.sources.paperActivity?.ok ? '尚无分配记录' : '不可用');
+  set('distributionNote', s.latestDistribution ? '该次协议分配 ' + money(s.latestDistribution.amount) : '查询官方最新分配事件');
+  renderPlan(); renderHistory();
+}
+
+function renderPlan() {
+  if (!snapshot) return;
+  try { plan = makePlan(snapshot, $('coin').value, config()); }
+  catch { plan = { ready: false, reasons: ['交易参数异常或输入无效'], warnings: [] }; }
+  if (!networkHealthy) { plan.ready = false; plan.reasons.push('网络连接失败，等待重新采集'); }
+  $('planState').className = 'plan-state' + (plan.ready ? '' : ' blocked');
+  set('planState', plan.ready ? '参数检查通过 · 仅供手动评估，不代表保证盈利' : '方案阻止：' + plan.reasons.join('；'));
+  $('copyPlan').disabled = !plan.ready;
+  $('orderParams').replaceChildren();
+  if (plan.scenarios) {
+    const fields = [['匹配数量', number(plan.quantity, 5) + ' ' + plan.coin], ['Paper 名义仓位', money(plan.notional)], ['实际 Paper 保证金', money(plan.paperMargin)], ['HL 进场 VWAP', money(plan.hedgeEntry)], ['HL 初始保证金估计', money(plan.marginMinimum) + ' + 缓冲'], ['止损 / 止盈价格变动', number(plan.stopMove * 100, 4) + '%'], ['硬清算距离估计', number(plan.bustDistance * 100, 4) + '%'], ['质押最低数量', compact(plan.staking.minimumPaper) + ' PAPER']];
+    for (const [name, value] of fields) { const row = el('div'); row.append(el('dt', name), el('dd', value)); $('orderParams').append(row); }
+    $('branches').replaceChildren(...plan.scenarios.map(b => { const card = el('article', undefined, 'branch'); card.append(el('h3', b.name), el('div', (b.pnl >= 0 ? '+' : '') + money(b.pnl), 'pnl ' + pnlClass(b.pnl))); for (const [name, value] of [['Paper 结算盈亏', money(b.paper.payout)], ['HL 盈亏（退出偏差已计）', money(b.hedgePnl)], ['HL 开平手续费', money(b.fees)], ['预计资金费收入', money(b.funding)], ['PAPER 数量', compact(b.mintedPaper)], ['亏损分支每枚成本', b.costPerPaper === null ? '未铸币' : number(b.costPerPaper, 8) + ' U']]) { const row = el('div', undefined, 'row'); row.append(el('span', name), el('span', value)); card.append(row); } return card; }));
+    const prob = Number($('lossProbability').value) / 100;
+    if (!(prob > 0 && prob <= 1)) set('expected', '概率必须在 1%–100% 之间。');
+    else {
+      const [loss, win] = plan.scenarios, mean = prob * loss.pnl + (1 - prob) * win.pnl, meanPaper = prob * loss.mintedPaper;
+      const cost = Math.max(0, -mean) / meanPaper;
+      const message = `在你输入的 ${number(prob * 100, 0)}% 亏损概率下，每次组合盈亏约 ${money(mean)}，每枚 PAPER 的重复试验平均成本约 ${number(cost, 8)} U。这个概率尚未验证，不能当作预期收益。`;
+      const validRows = history.filter(r => r.reward_accumulator !== null && r.paper_source_at !== null);
+      let income = '';
+      if (validRows.length >= 2) {
+        const first = validRows[0], last = validRows.at(-1), delta = Number(BigInt(last.reward_accumulator) - BigInt(first.reward_accumulator)) / 1e27;
+        const hours = (last.paper_source_at - first.paper_source_at) / 3600000;
+        if (delta > 0 && hours > 0) income = ` 若未来分配速度等于本区间，持续质押的成本回收时间外推约 ${number(cost / (delta / hours), 1)} 小时；该速度可能变化。`;
+        else income = ' 本区间尚无正的分配指数增长，暂无可支持现金回本时间的观测。';
+      } else income = ' 尚缺连续分红样本，现金回本时间不可用。';
+      set('expected', message + income);
+    }
+  } else { $('branches').replaceChildren(el('p', '等待有效行情与参数。', 'subtle')); set('expected', '无法计算；缺失字段没有用零替代。'); }
+  $('warnings').replaceChildren(...(plan.warnings ?? []).map(text => el('li', text)));
+}
+
+function renderHistory() {
+  const valid = history.filter(r => r.paper_supply !== null && Number.isFinite(r.paper_supply));
+  set('historyState', history.length ? history.length + ' 个样本 · ' + time(history[0].collected_at) + ' 起' : '还没有历史样本');
+  if (valid.length >= 2) {
+    const first = valid[0], last = valid.at(-1); set('dilution', first.paper_supply > 0 ? number((last.paper_supply / first.paper_supply - 1) * 100, 2) + '%' : '不可用');
+    const r = history.filter(x => x.reward_accumulator !== null);
+    if (r.length >= 2) set('periodDividend', money(Number(BigInt(r.at(-1).reward_accumulator) - BigInt(r[0].reward_accumulator)) / 1e27 * 100000));
+    else set('periodDividend', '样本不足');
+    const low = Math.min(...valid.map(r => r.paper_supply)), high = Math.max(...valid.map(r => r.paper_supply)), span = high - low || 1;
+    const from = valid[0].collected_at, duration = valid.at(-1).collected_at - from || 1;
+    const points = valid.map(r => `${20 + (r.collected_at - from) / duration * 960},${155 - (r.paper_supply - low) / span * 130}`).join(' ');
+    const svg = $('historyChart'); svg.replaceChildren();
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline'); line.setAttribute('points', points); line.setAttribute('fill', 'none'); line.setAttribute('stroke', '#b9f2b0'); line.setAttribute('stroke-width', '2'); svg.append(line);
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text'); label.setAttribute('x', '20'); label.setAttribute('y', '20'); label.setAttribute('fill', '#88958f'); label.textContent = compact(low) + ' → ' + compact(high) + ' PAPER'; svg.append(label);
+  } else { set('dilution', '样本不足'); set('periodDividend', '样本不足'); }
+}
+
+async function refresh() {
+  if (refreshing) return; refreshing = true;
+  try { const response = await fetch('/api/live', { cache: 'no-store', signal: AbortSignal.timeout(25000) }); if (!response.ok) throw new Error('API unavailable'); snapshot = await response.json(); networkHealthy = true; render(); }
+  catch { networkHealthy = false; $('connection').className = 'status bad'; set('connection', '连接失败'); set('notice', '连接失败。旧值仅供查看，方案已经阻止；恢复后重新计算。'); renderPlan(); }
+  finally { refreshing = false; }
+}
+async function refreshHistory() {
+  if (historyRefreshing) return; historyRefreshing = true;
+  try { const r = await fetch('/api/history?hours=' + Number($('historyHours').value), { signal: AbortSignal.timeout(15000) }); const data = await r.json(); if (!r.ok) throw new Error(data.error); history = data.rows; renderHistory(); renderPlan(); }
+  catch (error) { set('historyState', error.message); }
+  finally { historyRefreshing = false; }
+}
+$('config').addEventListener('input', renderPlan);
+$('historyHours').addEventListener('change', refreshHistory);
+$('exportDay').value = new Date().toISOString().slice(0, 10);
+const updateExport = () => $('exportLink').href = '/api/export.csv?day=' + encodeURIComponent($('exportDay').value);
+$('exportDay').addEventListener('change', updateExport); updateExport();
+$('copyPlan').addEventListener('click', async () => {
+  renderPlan(); if (!plan?.ready) return;
+  const p = plan, text = [`${p.coin} 对冲方案（仅测算；确认实际成交后再匹配数量）`, `采集时间：${time(snapshot.collectedAt)}`, `Paper ${p.config.paperLong ? '多' : '空'}：${p.quantity} ${p.coin}，保证金 ${p.paperMargin.toFixed(4)} U，${p.config.paperLeverage}x，参考价 ${p.prices.paperEntry}`, `HL ${p.hedgeLong ? '多' : '空'}：${p.quantity} ${p.coin}，${p.config.hedgeLeverage}x，订单簿 VWAP ${p.hedgeEntry.toFixed(4)}，最低保证金估计 ${p.marginMinimum.toFixed(2)} U + 浮亏缓冲`, `先确认 Paper 提交/成交状态与真实入场价；HL 使用价格限制并匹配已成交数量；任何一腿失败即停止加仓，处理已有敞口。`, `止损/止盈参考价：${p.scenarios.map(b => b.exitMid.toFixed(4)).join(' / ')}；HL 平仓使用 reduce-only，数量以真实仓位为准。`, `Paper 亏损分支组合盈亏 ${p.scenarios[0].pnl.toFixed(4)} U / 铸币 ${p.scenarios[0].mintedPaper.toFixed(4)} PAPER`, `Paper 盈利分支组合盈亏 ${p.scenarios[1].pnl.toFixed(4)} U / 不铸币`, ...p.warnings].join('\n');
+  try { await navigator.clipboard.writeText(text); set('copyResult', '方案已复制；不会提交订单。'); } catch { set('copyResult', '浏览器禁止剪贴板，请根据上方参数手动操作。'); }
+});
+await refresh(); await refreshHistory();
+setInterval(refresh, 10000); setInterval(refreshHistory, 60000);
+setInterval(() => { if (snapshot) render(); }, 5000);
