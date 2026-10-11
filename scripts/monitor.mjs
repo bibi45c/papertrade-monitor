@@ -12,6 +12,6 @@ do {
   console.log('兑付队列:', s.queue ? `${s.queue.count} 笔 / ${s.queue.total.toFixed(2)} U` : '不可用', '| 供应:', s.paper?.supply ?? '不可用', '| 铸币率:', emissionRate(s.paper) ?? '不可用');
   console.log('下单队列:', s.executionQueue.available ? `等待 ${s.executionQueue.queuedIntents} / 已提交 ${s.executionQueue.submittedIntents}；Gas 容量折算 ${s.executionQueue.capacityBlocks} 块（不是成交时间）` : s.executionQueue.reason);
   console.log('BTC 方案:', plan.ready ? `${plan.quantity} BTC；Paper ${plan.notional.toFixed(2)}U，HL 最低保证金估计 ${plan.marginMinimum.toFixed(2)}U` : plan.reasons.join('；'));
-  if (plan.scenarios) console.table(plan.scenarios.map(b => ({ branch: b.name, '组合盈亏U': b.pnl?.toFixed(4), 'PAPER数量': b.mintedPaper.toFixed(2), '每PAPER成本': b.costPerPaper?.toFixed(8) ?? '未铸币' })));
+  if (plan.scenarios) console.table(plan.scenarios.map(b => ({ branch: b.name, '组合盈亏U': b.pnl?.toFixed(4), 'PAPER数量': b.mintedPaper.toFixed(2), '每1万枚PAPER成本U': b.costPerPaper === null ? '未铸币' : Number.isFinite(b.costPerPaper) ? (b.costPerPaper * 10000).toFixed(2) : '不可用' })));
   if (!once) await new Promise(resolve => setTimeout(resolve, 15000));
 } while (!once);

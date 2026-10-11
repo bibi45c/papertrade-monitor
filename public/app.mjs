@@ -3,6 +3,8 @@ const $ = id => document.getElementById(id);
 let snapshot = null, stored = null, plan = null, history = [], recent = [], day = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
 const number = (value, digits = 2) => value === null || value === undefined || !Number.isFinite(value) ? '不可用' : value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const money = value => number(value) + (Number.isFinite(value) ? ' U' : '');
+const PAPER_DISPLAY_QUANTITY = 10000;
+const paperUnitMoney = value => money(Number.isFinite(value) ? value * PAPER_DISPLAY_QUANTITY : null);
 const compact = value => Number.isFinite(value) ? new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(value) : '不可用';
 const time = value => Number.isFinite(value) ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Singapore', hour12: false }) : '不可用';
 const age = value => Number.isFinite(value) ? Math.max(0, Math.round((Date.now() - value) / 1000)) + ' s' : '不可用';
@@ -74,11 +76,11 @@ function renderPath() {
   if (!snapshot) return;
   const s = snapshot, rate = emissionRate(s.paper), btc = s.trading?.instruments?.find(i => i.symbol === 'BTC');
   const w60 = stakerIncomeWindow(recent, 60), w30 = stakerIncomeWindow(recent, 30), k = w60?.incomePerNewPaper ?? null;
-  set('incomePerNew', k === null ? '样本不足' : number(k, 5) + ' U');
-  set('incomePerNewNote', w30?.incomePerNewPaper ? '30 分钟 ' + number(w30.incomePerNewPaper, 5) + ' U · （分配 + 待分配变化）÷ 新铸 PAPER' : '（分配 + 待分配变化）÷ 新铸 PAPER；需要至少 48 分钟连续样本');
+  set('incomePerNew', k === null ? '样本不足' : paperUnitMoney(k));
+  set('incomePerNewNote', w30?.incomePerNewPaper != null ? '30 分钟每 1 万枚 ' + paperUnitMoney(w30.incomePerNewPaper) + ' · （分配 + 待分配变化）÷ 新铸 PAPER × 10,000' : '（分配 + 待分配变化）÷ 新铸 PAPER × 10,000；需要至少 48 分钟连续样本');
   set('stakerShare', k !== null && rate !== null ? number(k * rate * 100, 1) + '%' : '不可用');
-  set('paperYield', w60 ? number(w60.yieldPerPaperHour, 5) + ' U' : '样本不足');
-  set('paperYieldNote', w30 ? '30 分钟折算 ' + number(w30.yieldPerPaperHour, 5) + ' U/小时 · 每 1 万枚约 ' + number(w60 ? w60.yieldPerPaperHour * 10000 : NaN, 1) + ' U/小时' : '分红指数增长；随供应增长下降');
+  set('paperYield', w60 ? paperUnitMoney(w60.yieldPerPaperHour) : '样本不足');
+  set('paperYieldNote', w30 ? '30 分钟折算每 1 万枚 ' + paperUnitMoney(w30.yieldPerPaperHour) + '/小时；随供应增长下降' : '分红指数增长；随供应增长下降');
   set('supplyGrowth', w60?.supplyGrowth ? '×' + number(w60.supplyGrowth, 2) : '样本不足');
   const paths = [];
   if (btc && rate !== null) {
@@ -89,13 +91,13 @@ function renderPath() {
     const prob = Number($('lossProbability').value) / 100, [loss, win] = plan.scenarios;
     if (prob > 0 && prob <= 1 && loss.mintedPaper > 0) paths.push([`HL 对冲 · 当前计算器 ${plan.config.paperLeverage}x`, Math.max(0, -(prob * loss.pnl + (1 - prob) * win.pnl)) / (prob * loss.mintedPaper), `按输入 ${number(prob * 100, 0)}% 亏损概率；另有两腿排队敞口`]);
   }
-  $('pathTable').replaceChildren(...(paths.length ? paths.map(([name, cost, note]) => { const g = breakEvenGrowth(cost, k), tr = el('tr'); [name, number(cost, 5) + ' U', g === null ? '不可用' : '×' + number(g, 2), note].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 4; tr.append(td); return tr; })()]));
+  $('pathTable').replaceChildren(...(paths.length ? paths.map(([name, cost, note]) => { const g = breakEvenGrowth(cost, k), tr = el('tr'); [name, paperUnitMoney(cost), g === null ? '不可用' : '×' + number(g, 2), note].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 4; tr.append(td); return tr; })()]));
   const best = btc && rate !== null ? breakEvenGrowth(pairHedgeCost(btc, rate, 0.01).costPerPaper, k) : null;
   set('pathState', best === null ? '样本不足 · 不判断' : best < 1.5 ? '最低成本路径需供应再增 ×' + number(best, 2) + ' · 可观察' : best < Math.E ? '需供应再增 ×' + number(best, 2) + ' · 警戒' : '需供应再增 ×' + number(best, 2) + ' · 已接近刷币者互相补贴，暂停新增');
   const burns = btc && rate !== null ? [['1000x · 亏损边爆仓', 1000, null], ['500x · 亏损边爆仓', 500, null], ['100x · 0.5% 平仓', 100, 0.005], ['50x · 1% 平仓', 50, 0.01], ['20x · 2% 平仓', 20, 0.02]].map(([name, lev, move]) => [name, burnEstimate({ instrument: btc, mintRate: rate, notional: s.trading.minimumOpenNotional, leverage: lev, move })]) : [];
-  $('burnTable').replaceChildren(...(burns.length ? burns.map(([name, b]) => { const tr = el('tr'); (b ? [name, money(b.margin), number(b.distance * 100, 3) + '%', money(b.expectedLossPerTrade), number(b.costPerPaper, 5) + ' U', compact(b.expectedPaper), number(b.expectedTrades, 0)] : [name, '不可用', '', '', '', '', '']).forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 7; tr.append(td); return tr; })()]));
+  $('burnTable').replaceChildren(...(burns.length ? burns.map(([name, b]) => { const tr = el('tr'); (b ? [name, money(b.margin), number(b.distance * 100, 3) + '%', money(b.expectedLossPerTrade), paperUnitMoney(b.costPerPaper), compact(b.expectedPaper), number(b.expectedTrades, 0)] : [name, '不可用', '', '', '', '', '']).forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 7; tr.append(td); return tr; })()]));
   const hours = s.protocolHours;
-  $('protocolHours').replaceChildren(...(hours?.length ? [...hours].reverse().map(h => { const tr = el('tr'); [time(h.startMs).slice(0, -3) + (h.partial ? '（进行中）' : ''), compact(h.revenue) + ' U', compact(h.minted), h.revenuePerNewPaper === null ? '—' : number(h.revenuePerNewPaper, 5) + ' U', h.revenuePerPaperHour === null ? '—' : number(h.revenuePerPaperHour, 5) + ' U', compact(h.traderPnl) + ' U', compact(h.liquidationNotional) + ' U'].forEach((x, i) => tr.append(el('td', x, i === 5 ? pnlClass(h.traderPnl) : undefined))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', s.sources.protocolHistory?.ok ? '尚无交易小时' : '官方小时统计不可用'); td.colSpan = 7; tr.append(td); return tr; })()]));
+  $('protocolHours').replaceChildren(...(hours?.length ? [...hours].reverse().map(h => { const tr = el('tr'); [time(h.startMs).slice(0, -3) + (h.partial ? '（进行中）' : ''), compact(h.revenue) + ' U', compact(h.minted), h.revenuePerNewPaper === null ? '—' : paperUnitMoney(h.revenuePerNewPaper), h.revenuePerPaperHour === null ? '—' : paperUnitMoney(h.revenuePerPaperHour), compact(h.traderPnl) + ' U', compact(h.liquidationNotional) + ' U'].forEach((x, i) => tr.append(el('td', x, i === 5 ? pnlClass(h.traderPnl) : undefined))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', s.sources.protocolHistory?.ok ? '尚无交易小时' : '官方小时统计不可用'); td.colSpan = 7; tr.append(td); return tr; })()]));
 }
 
 function renderPlan() {
@@ -110,13 +112,13 @@ function renderPlan() {
   if (plan.scenarios) {
     const fields = [['匹配数量', number(plan.quantity, 5) + ' ' + plan.coin], ['Paper 名义仓位', money(plan.notional)], ['实际 Paper 保证金', money(plan.paperMargin)], ['HL 进场 VWAP', money(plan.hedgeEntry)], ['HL 初始保证金估计', money(plan.marginMinimum) + ' + 缓冲'], ['单腿每 1 bps 敞口', money(plan.latencyExposurePerBps)], ['止损 / 止盈价格变动', number(plan.stopMove * 100, 4) + '%'], ['硬清算距离估计', number(plan.bustDistance * 100, 4) + '%'], ['质押最低数量', compact(plan.staking.minimumPaper) + ' PAPER']];
     for (const [name, value] of fields) { const row = el('div'); row.append(el('dt', name), el('dd', value)); $('orderParams').append(row); }
-    $('branches').replaceChildren(...plan.scenarios.map(b => { const card = el('article', undefined, 'branch'); card.append(el('h3', b.name), el('div', (b.pnl >= 0 ? '+' : '') + money(b.pnl), 'pnl ' + pnlClass(b.pnl))); for (const [name, value] of [['Paper 结算盈亏', money(b.paper.payout)], ['HL 盈亏（退出偏差已计）', money(b.hedgePnl)], ['HL 开平手续费', money(b.fees)], ['预计资金费收入', money(b.funding)], ['PAPER 数量', compact(b.mintedPaper)], ['亏损分支每枚成本', b.costPerPaper === null ? '未铸币' : number(b.costPerPaper, 8) + ' U']]) { const row = el('div', undefined, 'row'); row.append(el('span', name), el('span', value)); card.append(row); } return card; }));
+    $('branches').replaceChildren(...plan.scenarios.map(b => { const card = el('article', undefined, 'branch'); card.append(el('h3', b.name), el('div', (b.pnl >= 0 ? '+' : '') + money(b.pnl), 'pnl ' + pnlClass(b.pnl))); for (const [name, value] of [['Paper 结算盈亏', money(b.paper.payout)], ['HL 盈亏（退出偏差已计）', money(b.hedgePnl)], ['HL 开平手续费', money(b.fees)], ['预计资金费收入', money(b.funding)], ['PAPER 数量', compact(b.mintedPaper)], ['亏损分支每 1 万枚 PAPER 成本', b.costPerPaper === null ? '未铸币' : paperUnitMoney(b.costPerPaper)]]) { const row = el('div', undefined, 'row'); row.append(el('span', name), el('span', value)); card.append(row); } return card; }));
     const prob = Number($('lossProbability').value) / 100;
     if (!(prob > 0 && prob <= 1)) set('expected', '概率必须在 1%–100% 之间。');
     else {
       const [loss, win] = plan.scenarios, mean = prob * loss.pnl + (1 - prob) * win.pnl, meanPaper = prob * loss.mintedPaper;
       const cost = Math.max(0, -mean) / meanPaper;
-      const message = `在你输入的 ${number(prob * 100, 0)}% 亏损概率下，每次组合盈亏约 ${money(mean)}，每枚 PAPER 的重复试验平均成本约 ${number(cost, 8)} U。这个概率尚未验证，不能当作预期收益。`;
+      const message = `在你输入的 ${number(prob * 100, 0)}% 亏损概率下，每次组合盈亏约 ${money(mean)}，每 1 万枚 PAPER 的重复试验平均成本约 ${paperUnitMoney(cost)}。这个概率尚未验证，不能当作预期收益。`;
       const validRows = history.filter(r => r.reward_accumulator !== null && r.paper_source_at !== null);
       let income = '';
       if (validRows.length >= 2) {
@@ -140,7 +142,7 @@ function renderHistory() {
   if (valid.length >= 2) {
     const first = valid[0], last = valid.at(-1); set('dilution', first.paper_supply > 0 ? number((last.paper_supply / first.paper_supply - 1) * 100, 2) + '%' : '不可用');
     const r = history.filter(x => x.reward_accumulator !== null);
-    if (r.length >= 2) set('periodDividend', money(Number(BigInt(r.at(-1).reward_accumulator) - BigInt(r[0].reward_accumulator)) / 1e27 * 100000));
+    if (r.length >= 2) set('periodDividend', paperUnitMoney(Number(BigInt(r.at(-1).reward_accumulator) - BigInt(r[0].reward_accumulator)) / 1e27));
     else set('periodDividend', '样本不足');
     const low = Math.min(...valid.map(r => r.paper_supply)), high = Math.max(...valid.map(r => r.paper_supply)), span = high - low || 1;
     const from = valid[0].collected_at, duration = valid.at(-1).collected_at - from || 1;

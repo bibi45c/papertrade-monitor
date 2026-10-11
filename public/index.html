@@ -21,12 +21,12 @@
       <article><span>实际质押供应</span><strong id="staked">—</strong><small id="stakeNote">—</small></article>
     </section>
     <section class="panel" aria-label="盈利路径指标"><div class="section-heading"><div><p class="eyebrow">PROFIT PATH</p><h2>拿 PAPER 划不划算</h2></div><span id="pathState" class="subtle">等待分钟历史</span></div>
-      <div class="history-metrics"><div><span>每枚新 PAPER 对应质押收入 · 60 分钟</span><strong id="incomePerNew">—</strong><small id="incomePerNewNote">（分配 + 待分配变化）÷ 新铸 PAPER</small></div><div><span>质押者拿走的亏损比例</span><strong id="stakerShare">—</strong><small>≈ 上项 × 当前铸币率；只剩对冲刷币者时约 13–15%</small></div><div><span>每枚 PAPER 每小时分红 · 60 分钟</span><strong id="paperYield">—</strong><small id="paperYieldNote">分红指数增长；随供应增长下降</small></div><div><span>供应增长 · 60 分钟</span><strong id="supplyGrowth">—</strong><small>新铸币稀释已有份额</small></div></div>
-      <div class="table-scroll"><table><thead><tr><th>拿 PAPER 的路径</th><th>每枚成本</th><th>回本所需供应增长</th><th>说明</th></tr></thead><tbody id="pathTable"></tbody></table></div>
-      <p class="footnote">回本所需供应增长 = exp(每枚成本 ÷ 每枚新 PAPER 对应收入)：假设该收入比率不变，铸币后全网供应还要增长这么多倍，分红才收回成本。比率会随参与者结构变化，不是收益预测。</p>
-      <div class="table-scroll"><table><thead><tr><th>1000 U · 50% 胜率 · 最小名义 10000 U</th><th>每笔保证金</th><th>平仓 / 爆仓距离</th><th>每笔期望损耗</th><th>每枚成本</th><th>磨损 1000 U 约得 PAPER</th><th>约笔数</th></tr></thead><tbody id="burnTable"></tbody></table></div>
+      <div class="history-metrics"><div><span>每 1 万枚新 PAPER 对应质押收入 · 60 分钟</span><strong id="incomePerNew">—</strong><small id="incomePerNewNote">（分配 + 待分配变化）÷ 新铸 PAPER × 10,000</small></div><div><span>质押者拿走的亏损比例</span><strong id="stakerShare">—</strong><small>≈ 上项 ÷ 10,000 × 当前铸币率；只剩对冲刷币者时约 13–15%</small></div><div><span>每 1 万枚 PAPER 每小时分红 · 60 分钟</span><strong id="paperYield">—</strong><small id="paperYieldNote">分红指数增长；随供应增长下降</small></div><div><span>供应增长 · 60 分钟</span><strong id="supplyGrowth">—</strong><small>新铸币稀释已有份额</small></div></div>
+      <div class="table-scroll"><table><thead><tr><th>拿 PAPER 的路径</th><th>每 1 万枚 PAPER 成本</th><th>回本所需供应增长</th><th>说明</th></tr></thead><tbody id="pathTable"></tbody></table></div>
+      <p class="footnote">回本所需供应增长 = exp(每 1 万枚 PAPER 成本 ÷ 每 1 万枚新 PAPER 对应收入)：假设该收入比率不变，铸币后全网供应还要增长这么多倍，分红才收回成本。比率会随参与者结构变化，不是收益预测。</p>
+      <div class="table-scroll"><table><thead><tr><th>1000 U · 50% 胜率 · 最小名义 10000 U</th><th>每笔保证金</th><th>平仓 / 爆仓距离</th><th>每笔期望损耗</th><th>每 1 万枚 PAPER 成本</th><th>磨损 1000 U 约得 PAPER</th><th>约笔数</th></tr></thead><tbody id="burnTable"></tbody></table></div>
       <p class="footnote">按当前铸币率计算的期望值；实际结果随机，保证金占用会留下无法继续下单的余额，铸币率随时间下降。同账户多空对冲的期望铸币量与 50% 胜率单向相同，但没有方差。</p>
-      <div class="table-scroll"><table><thead><tr><th>官方小时统计 · 新加坡时间</th><th>质押者收入</th><th>新铸 PAPER</th><th>每枚新 PAPER 收入</th><th>每枚 PAPER 小时分红</th><th>交易者净盈亏</th><th>清算名义</th></tr></thead><tbody id="protocolHours"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>官方小时统计 · 新加坡时间</th><th>质押者收入</th><th>新铸 PAPER</th><th>每 1 万枚新 PAPER 收入</th><th>每 1 万枚 PAPER 小时分红</th><th>交易者净盈亏</th><th>清算名义</th></tr></thead><tbody id="protocolHours"></tbody></table></div>
       <p class="footnote">规则核查：官方签名格式中每笔开仓独立带方向，链上可见同一账户同时持有多空；Close 意图接收多个仓位 ID，可在同一区块一起平仓。文档未禁止多账户，也没有公开服务条款；协议方仍可修改参数或升级合约。</p>
     </section>
     <section class="panel" aria-label="风险与规则变更预警"><div class="section-heading"><div><p class="eyebrow">RISK &amp; GOVERNANCE</p><h2>上新、规则变更与跳空预警</h2></div><span id="riskState" class="subtle">等待数据</span></div>
@@ -65,7 +65,7 @@
       </section>
     </div>
     <section class="panel history"><div class="section-heading"><div><p class="eyebrow">CASH FLOW & DILUTION</p><h2>分红、稀释与历史</h2></div><select id="historyHours" aria-label="历史区间"><option value="1">最近 1 小时</option><option value="24" selected>最近 24 小时</option><option value="168">最近 7 天</option><option value="2160">最近 90 天</option></select></div>
-      <div class="history-metrics"><div><span>最近一次分配</span><strong id="distribution">—</strong><small id="distributionNote">—</small></div><div><span>区间内每 10 万 PAPER 分配</span><strong id="periodDividend">—</strong><small>假设该区间一直质押 · 分配不等于已提现</small></div><div><span>区间供应增长</span><strong id="dilution">—</strong><small>通过采集记录比较；空缺保持空缺</small></div><div><span>PAPER 市场价格</span><strong>未核实</strong><small>铸币成本、奖励份额均不能代替报价</small></div></div>
+      <div class="history-metrics"><div><span>最近一次分配</span><strong id="distribution">—</strong><small id="distributionNote">—</small></div><div><span>区间内每 1 万枚 PAPER 分配</span><strong id="periodDividend">—</strong><small>假设该区间一直质押 · 分配不等于已提现</small></div><div><span>区间供应增长</span><strong id="dilution">—</strong><small>通过采集记录比较；空缺保持空缺</small></div><div><span>PAPER 市场价格</span><strong>未核实</strong><small>铸币成本、奖励份额均不能代替报价</small></div></div>
       <div class="chart-heading"><span>供应变化</span><span class="subtle" id="historyState">正在读取历史</span></div><svg id="historyChart" viewBox="0 0 1000 180" role="img" aria-label="PAPER 供应历史曲线"><text x="500" y="90" text-anchor="middle" fill="#88958f">至少需要两个有效样本</text></svg>
       <div class="export"><label>导出日期 · UTC<input id="exportDay" type="date"></label><a id="exportLink" class="button" href="/api/export.csv">下载当日 CSV</a><span class="subtle">云端 D1 保存 90 天明细；本地开发保存到 data/history.sqlite。</span></div>
     </section>
