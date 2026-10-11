@@ -2,8 +2,9 @@ import http from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { api, liveSnapshot } from '../src/worker.mjs';
-import { saveSnapshot, purgeExpired } from '../src/storage.mjs';
+import { api } from '../src/worker.mjs';
+import { collect } from '../src/collect.mjs';
+import { saveSnapshot, purgeExpired, latestSnapshot } from '../src/storage.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 await mkdir(root + 'data', { recursive: true });
@@ -15,7 +16,14 @@ const db = { prepare(sql) { let values = []; return {
   async first() { return database.prepare(sql).get(...values) ?? null; },
   async all() { return { results: database.prepare(sql).all(...values) }; },
 }; } };
-const save = async () => { try { await saveSnapshot(db, await liveSnapshot()); await purgeExpired(db, Date.now()); } catch (error) { console.error('采集失败:', error.message); } };
+// 与云端定时任务一致：沿用上一条记录的治理扫描游标，每小时第 11 分钟检查文档与前端版本。
+const save = async () => {
+  try {
+    const previous = await latestSnapshot(db).catch(() => null);
+    await saveSnapshot(db, await collect({ previous, scanGov: true, checkWeb: new Date().getUTCMinutes() === 11 || !previous?.web }));
+    await purgeExpired(db, Date.now());
+  } catch (error) { console.error('采集失败:', error.message); }
+};
 await save();
 setInterval(save, 60000).unref();
 const port = Number(process.env.PORT ?? 8787);

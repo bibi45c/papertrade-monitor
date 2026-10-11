@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { collect, parseSummary, parseTrading, parseQueue, parseBbo } from '../src/collect.mjs';
+import { collect, parseSummary, parseTrading, parseQueue, parseBbo, parseProtocolHistory } from '../src/collect.mjs';
 const units = n => String(BigInt(n) * 10n ** 18n);
 function summary() { return { ok: true, source: { block: '123', at: Date.now(), genesis: 0 }, balances: Object.fromEntries(['tvl', 'margin', 'lp', 'reserve', 'queue'].map(k => [k, units(0)])), paper: Object.fromEntries(['supply', 'staked', 'trackedLp', 'accumulator', 'reserve', 'unallocated', 'pendingRewards', 'cliff', 'cap', 'rate', 'decay', 'tailProgress'].map(k => [k, units(100)])), fees: { pending: units(1), lifetime: units(2) }, activity: { volume: units(1), open: 2 } }; }
 test('raw 18-decimal values are normalized while original strings are retained', () => { const s = summary(), parsed = parseSummary(s); assert.equal(parsed.paper.supply, 100); assert.equal(parsed.raw.paper.supply, units(100)); });
@@ -38,4 +38,13 @@ test('complete collection pins BBO reads and retries one transient RPC error', a
   assert.equal(s.markets[0].paperMid, 80000.5); assert.equal(s.sources.paperBbo.ok, true);
   assert.equal(s.rewardAccumulatorRaw, units(100)); assert.deepEqual(seenBlocks, ['0x7b', '0x7b']);
   assert.equal(s.executionQueue.available, true); assert.equal(s.sources.executionQueue.at, at);
+});
+test('protocol hourly history derives per-hour minted PAPER and flags the running hour', () => {
+  const h = { startMs: 0, intervalMs: 3600000, source: { asOfMs: 3 * 3600000 + 1000, revision: '9' }, columns: {
+    paperRevenue: [0, 0, 10, 20], traderPnl: [0, 0, -50, -80], liquidation: [0, 0, 100, 160], paperSupply: [0, 0, 1000, 5000], paperStaked: [0, 0, 800, 4800], trades: [0, 0, 5, 9] } };
+  const p = parseProtocolHistory(h);
+  assert.equal(p.hours.length, 2); assert.equal(p.hours[0].minted, 1000); assert.equal(p.hours[1].minted, 4000);
+  assert.equal(p.hours[1].revenuePerNewPaper, 0.005); assert.equal(p.hours[1].traderPnl, -30); assert.equal(p.hours[1].partial, true); assert.equal(p.hours[0].partial, false);
+  assert.throws(() => parseProtocolHistory({ ...h, intervalMs: 60000 }));
+  assert.throws(() => parseProtocolHistory({ ...h, columns: { ...h.columns, trades: [0] } }));
 });

@@ -48,7 +48,11 @@ export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil((async () => {
       if (!env.DB) throw new Error('D1 DB binding is required for scheduled collection');
-      const snapshot = await collect();
+      // 治理日志增量扫描依赖上一条记录的区块游标；每小时第 11 分钟检查一次文档和官方前端版本。
+      let previous = null;
+      try { previous = await latestSnapshot(env.DB); } catch { previous = null; }
+      const minute = new Date(event.scheduledTime).getUTCMinutes();
+      const snapshot = await collect({ previous, scanGov: true, checkWeb: minute === 11 || !previous?.web });
       await saveSnapshot(env.DB, snapshot);
       const time = new Date(event.scheduledTime);
       if (time.getUTCHours() === 0 && time.getUTCMinutes() === 17) await purgeExpired(env.DB, event.scheduledTime);

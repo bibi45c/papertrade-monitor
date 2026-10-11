@@ -37,7 +37,7 @@ test('null latest EVM block is retried; exhaustion remains a failure', async () 
   assert.equal(calls, 3);
 });
 test('RPC invalid params fail once while temporary block failures retry', async () => {
-  for (const [error, expected] of [[{ code: -32602, message: 'Invalid params' }, 1], [{ code: -32000, message: 'Block temporarily unavailable' }, 3]]) {
+  for (const [error, expected] of [[{ code: -32602, message: 'Invalid params' }, 1], [{ code: -32000, message: 'Block temporarily unavailable' }, 3], [{ code: -32000, message: 'invalid block height: 48223822' }, 3]]) {
     let calls = 0;
     await assert.rejects(readJson('https://example.test', {}, async () => { calls++; return Response.json({ error }); }, { ...fast, validate: checkRpcError }));
     assert.equal(calls, expected);

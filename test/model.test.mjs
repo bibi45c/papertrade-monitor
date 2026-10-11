@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emissionRate, paperPnl, makePlan, vwap, roundSize } from '../src/model.mjs';
+import { emissionRate, paperPnl, makePlan, vwap, roundSize, stakerIncomeWindow, breakEvenGrowth, pairHedgeCost, burnEstimate } from '../src/model.mjs';
 const instrument = { id: 0, symbol: 'BTC', rateMultiplier: 15000, positionMultiplier: 814.598, referenceNotional: 100000, baseRate: .1, bustBuffer: .0005, openable: true, maxLeverage: 1000, maxPositionNotional: 1e7, longOi: 100, shortOi: 100, longCap: 1e6, shortCap: 1e6 };
 function sample() { const now = Date.now(); return { paper: { rate: 100, trackedLp: 1e6, cliff: 2e6, decay: 120e6, tailProgress: 0 }, sources: Object.fromEntries(['summary', 'queue', 'trading', 'context', 'executionQueue'].map(k => [k, { ok: true, at: now }])),
   trading: { block: 100, paused: false, blockedActions: [], instruments: [instrument], minimumMargin: 10, minimumOpenNotional: 1000, minimumPaperStake: 1000, maximumNetOpenInterest: 25e6 }, queue: { count: 0, total: 0 },
@@ -64,4 +64,33 @@ test('execution queue gates crowded or stale plans while retaining both financia
   const stale = sample(); stale.executionQueue.sourceAt -= 16000; assert.equal(makePlan(stale, 'BTC').ready, false);
   const unknown = sample(); unknown.executionQueue = { available: false }; assert.equal(makePlan(unknown, 'BTC').ready, false);
   const oldPreview = sample(); oldPreview.executionQueue.preview = [{ acceptedAt: Date.now() - 31000 }]; assert.equal(makePlan(oldPreview, 'BTC').ready, false);
+});
+const acc = x => String(BigInt(Math.round(x * 1e9)) * 10n ** 18n); // U/PAPER with 1e27 precision
+const row = (min, index, supply, staked, pending) => ({ collected_at: min * 60000, paper_supply: supply, staked_supply: staked, pending_rewards: pending, reward_accumulator: acc(index) });
+test('staker income per new PAPER combines distributions and pending changes, never zero-fills', () => {
+  const rows = [row(0, 0, 1000, 1000, 0), row(30, 0.001, 1500, 1000, 0), row(60, 0.001, 2000, 1500, 0.5)];
+  const w = stakerIncomeWindow(rows, 60);
+  assert.ok(Math.abs(w.income - 1.5) < 1e-9); assert.equal(w.minted, 1000); assert.ok(Math.abs(w.incomePerNewPaper - 0.0015) < 1e-12);
+  assert.ok(Math.abs(w.yieldPerPaperHour - 0.001) < 1e-12); assert.equal(w.supplyGrowth, 2);
+  assert.equal(stakerIncomeWindow(rows.slice(0, 1), 60), null);
+  assert.equal(stakerIncomeWindow([row(0, 0, 1, 1, 0), row(20, 0, 2, 1, 0)], 60), null, 'coverage below 80% is unavailable');
+  assert.equal(stakerIncomeWindow([{ ...rows[0], reward_accumulator: null }, rows[1]], 60), null);
+});
+test('break-even supply growth is exp(cost / income per new PAPER)', () => {
+  assert.ok(Math.abs(breakEvenGrowth(0.002, 0.002) - Math.E) < 1e-12);
+  assert.equal(breakEvenGrowth(0.002, 0), null); assert.equal(breakEvenGrowth(NaN, 0.01), null);
+});
+test('Paper long+short hedge costs only the win haircut and mints on the losing leg', () => {
+  const h = pairHedgeCost(instrument, 100, 0.01);
+  const win = paperPnl({ notional: 10000, priceMove: 0.01, instrument, mintRate: 100 }).payout;
+  assert.ok(Math.abs(h.cost - (100 - win)) < 1e-9); assert.equal(h.mintedPaper, 9800);
+  assert.ok(h.keep > 0.85 && h.keep < 0.882);
+});
+test('50% win-rate burn estimate matches the hedge cost and penalises hard liquidation', () => {
+  const b = burnEstimate({ instrument, mintRate: 100, notional: 10000, leverage: 50, move: 0.01 });
+  assert.ok(Math.abs(b.costPerPaper - pairHedgeCost(instrument, 100, 0.01).costPerPaper) < 1e-12);
+  assert.ok(Math.abs(b.expectedPaper - 1000 / b.costPerPaper) < 1e-6);
+  const bust = burnEstimate({ instrument, mintRate: 100, notional: 10000, leverage: 1000, move: null });
+  assert.equal(bust.lose, -10); assert.equal(bust.mintPerLoss, 1000); assert.ok(bust.costPerPaper > 3 * b.costPerPaper);
+  assert.equal(burnEstimate({ instrument, mintRate: 100, notional: 10000, leverage: 100, move: 0.02 }), null, 'stop beyond bust is rejected');
 });

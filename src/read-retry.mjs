@@ -8,8 +8,10 @@ export class ReadError extends Error {
 export function checkRpcError(reply) {
   if (!reply?.error) return;
   const { code, message } = reply.error;
-  const permanent = [-32600, -32601, -32602].includes(code) || /revert|invalid|unsupported|unauthori[sz]ed|forbidden/i.test(message ?? '');
-  const transient = code === -32005 || code === -32603 || /temporar|unavailable|timeout|timed out|rate|busy|try again|internal|header not found/i.test(message ?? '');
+  // 负载均衡后的节点同步有先后：刚取到的最新区块在另一节点上可能还不存在，稍后重试即可。
+  const lagging = /invalid block height|header not found|unknown block|block not found/i.test(message ?? '');
+  const permanent = !lagging && ([-32600, -32601, -32602].includes(code) || /revert|invalid|unsupported|unauthori[sz]ed|forbidden/i.test(message ?? ''));
+  const transient = lagging || code === -32005 || code === -32603 || /temporar|unavailable|timeout|timed out|rate|busy|try again|internal/i.test(message ?? '');
   throw new ReadError('RPC: ' + String(message ?? code).slice(0, 140), !permanent && transient);
 }
 

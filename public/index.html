@@ -20,6 +20,23 @@
       <article><span>兑付队列</span><strong id="queue">—</strong><small id="queueNote">金额与人数分别记录</small></article>
       <article><span>实际质押供应</span><strong id="staked">—</strong><small id="stakeNote">—</small></article>
     </section>
+    <section class="panel" aria-label="盈利路径指标"><div class="section-heading"><div><p class="eyebrow">PROFIT PATH</p><h2>拿 PAPER 划不划算</h2></div><span id="pathState" class="subtle">等待分钟历史</span></div>
+      <div class="history-metrics"><div><span>每枚新 PAPER 对应质押收入 · 60 分钟</span><strong id="incomePerNew">—</strong><small id="incomePerNewNote">（分配 + 待分配变化）÷ 新铸 PAPER</small></div><div><span>质押者拿走的亏损比例</span><strong id="stakerShare">—</strong><small>≈ 上项 × 当前铸币率；只剩对冲刷币者时约 13–15%</small></div><div><span>每枚 PAPER 每小时分红 · 60 分钟</span><strong id="paperYield">—</strong><small id="paperYieldNote">分红指数增长；随供应增长下降</small></div><div><span>供应增长 · 60 分钟</span><strong id="supplyGrowth">—</strong><small>新铸币稀释已有份额</small></div></div>
+      <div class="table-scroll"><table><thead><tr><th>拿 PAPER 的路径</th><th>每枚成本</th><th>回本所需供应增长</th><th>说明</th></tr></thead><tbody id="pathTable"></tbody></table></div>
+      <p class="footnote">回本所需供应增长 = exp(每枚成本 ÷ 每枚新 PAPER 对应收入)：假设该收入比率不变，铸币后全网供应还要增长这么多倍，分红才收回成本。比率会随参与者结构变化，不是收益预测。</p>
+      <div class="table-scroll"><table><thead><tr><th>1000 U · 50% 胜率 · 最小名义 10000 U</th><th>每笔保证金</th><th>平仓 / 爆仓距离</th><th>每笔期望损耗</th><th>每枚成本</th><th>磨损 1000 U 约得 PAPER</th><th>约笔数</th></tr></thead><tbody id="burnTable"></tbody></table></div>
+      <p class="footnote">按当前铸币率计算的期望值；实际结果随机，保证金占用会留下无法继续下单的余额，铸币率随时间下降。同账户多空对冲的期望铸币量与 50% 胜率单向相同，但没有方差。</p>
+      <div class="table-scroll"><table><thead><tr><th>官方小时统计 · 新加坡时间</th><th>质押者收入</th><th>新铸 PAPER</th><th>每枚新 PAPER 收入</th><th>每枚 PAPER 小时分红</th><th>交易者净盈亏</th><th>清算名义</th></tr></thead><tbody id="protocolHours"></tbody></table></div>
+      <p class="footnote">规则核查：官方签名格式中每笔开仓独立带方向，链上可见同一账户同时持有多空；Close 意图接收多个仓位 ID，可在同一区块一起平仓。文档未禁止多账户，也没有公开服务条款；协议方仍可修改参数或升级合约。</p>
+    </section>
+    <section class="panel" aria-label="风险与规则变更预警"><div class="section-heading"><div><p class="eyebrow">RISK &amp; GOVERNANCE</p><h2>上新、规则变更与跳空预警</h2></div><span id="riskState" class="subtle">等待数据</span></div>
+      <div class="history-metrics"><div><span>timelock 排程中的操作</span><strong id="govCount">—</strong><small id="govNote">owner 是 7 天 timelock，上新、改参数、升级都要提前排程</small></div><div><span>上新 / 参数 / 状态变化</span><strong id="listingCount">—</strong><small id="listingNote">与上线时的 BTC、ETH 基线比较</small></div><div><span>涨多少会把 LP 打到 200 万以下</span><strong id="lpCliffMove">—</strong><small id="lpCliffNote">交易者净持仓全部兑现的保守估计</small></div><div><span>下一个宏观事件</span><strong id="nextEvent">—</strong><small id="nextEventNote">FOMC、CPI、非农；前后 30 分钟为高波动窗口</small></div></div>
+      <div class="table-scroll"><table><thead><tr><th>排程操作（timelock）</th><th>目标合约</th><th>可执行时间 · 新加坡</th><th>状态</th></tr></thead><tbody id="govTable"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>上新与参数预警</th><th>级别</th></tr></thead><tbody id="listingTable"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>LP 打穿测算</th><th>交易者净持仓</th><th>上涨到 200 万 / 到 0</th><th>下跌到 200 万 / 到 0</th></tr></thead><tbody id="lpRiskTable"></tbody></table></div>
+      <div class="table-scroll"><table><thead><tr><th>秒级跳动（上一分钟）</th><th>最大 1 秒</th><th>最大 10 秒</th><th>近 24 小时 1 秒 &gt; 0.1% 的分钟数</th></tr></thead><tbody id="jumpTable"></tbody></table></div>
+      <p id="riskFootnote" class="footnote">治理：owner 是 7 天 timelock，由多签控制，多签同时是 pause guardian（可立即暂停开仓或永久退市某市场）；market keeper 可立即调整 OI 上限与最小仓位。文档未提到 PAPER 投票。秒级跳动用 Binance 现货 1 秒 K 线代理 HL 价格；LP 打穿测算未计清算保证金收入与分批平仓。</p>
+    </section>
     <section class="panel" aria-label="全球下单队列"><div class="section-heading"><div><p class="eyebrow">EXECUTION QUEUE</p><h2>下单等待与执行压力</h2></div><span id="executionState" class="subtle">等待官方状态流</span></div>
       <div class="history-metrics"><div><span>全球等待 / 已提交</span><strong id="executionCount">—</strong><small>笔数，包含交易、质押等请求</small></div><div><span>Gas 容量折算</span><strong id="executionBlocks">—</strong><small>按整块容量计算，不能当作成交倒计时</small></div><div><span>已提交 Gas 压力</span><strong id="executionPressure">—</strong><small>0% 也可能有大量请求仍在队列</small></div><div><span>前 10 条最大等待</span><strong id="executionOldest">—</strong><small>只描述队列预览，不代表全队列最大值</small></div></div>
       <div class="table-scroll"><table><thead><tr><th>执行顺序预览</th><th>请求类型</th><th>优先级类别</th><th>预估 Gas</th><th>已等待</th></tr></thead><tbody id="executionPreview"></tbody></table></div>

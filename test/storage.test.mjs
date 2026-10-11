@@ -12,7 +12,7 @@ test('minute snapshots deduplicate and retain exact reward accumulator strings',
 });
 test('CSV exports nulls as empty and uses a validated UTC date', async () => {
   const db = database(); await saveSnapshot(db, snapshot(Date.parse('2026-10-10T14:00:00Z')));
-  const csv = await exportDay(db, '2026-10-10'); assert.ok(csv.includes('reward_accumulator')); assert.ok(csv.includes(',"0","0",,,,,,,,\n')); assert.ok(!csv.includes('undefined'));
+  const csv = await exportDay(db, '2026-10-10'); assert.ok(csv.includes('reward_accumulator')); assert.ok(csv.includes(',"0","0"' + ','.repeat(19) + '\n')); assert.ok(!csv.includes('undefined'));
   await assert.rejects(() => exportDay(db, '2026-02-30')); await assert.rejects(() => exportDay(db, '"evil'));
 });
 test('execution queue history is extracted from existing JSON with old and failed samples kept null', async () => {

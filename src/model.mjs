@@ -133,3 +133,81 @@ export function dividendBreakEven(plan, cashPerPaper) {
   const branch = plan.scenarios[0];
   return branch.costPerPaper === null ? null : branch.costPerPaper / cashPerPaper;
 }
+
+// 盈利路径指标。全部由公开快照推导；样本不足或字段缺失返回 null，不补零。
+const finiteRow = r => r && r.reward_accumulator !== null && r.reward_accumulator !== undefined && [r.collected_at, r.paper_supply, r.staked_supply, r.pending_rewards].every(Number.isFinite);
+export function stakerIncomeWindow(rows, minutes) {
+  const valid = (rows ?? []).filter(finiteRow);
+  if (valid.length < 2 || !positive(minutes)) return null;
+  const end = valid.at(-1).collected_at, win = valid.filter(r => r.collected_at >= end - minutes * 60000);
+  if (win.length < 2) return null;
+  const span = (win.at(-1).collected_at - win[0].collected_at) / 60000;
+  if (span < minutes * 0.8) return null;
+  let indexDelta = 0, distributed = 0;
+  for (let i = 1; i < win.length; i++) {
+    const d = Number(BigInt(win[i].reward_accumulator) - BigInt(win[i - 1].reward_accumulator)) / 1e27;
+    indexDelta += d; distributed += d * win[i - 1].staked_supply;
+  }
+  const first = win[0], last = win.at(-1);
+  const income = distributed + last.pending_rewards - first.pending_rewards, minted = last.paper_supply - first.paper_supply;
+  return { minutes: span, indexDelta, yieldPerPaperHour: indexDelta / span * 60, distributed, income, minted,
+    incomePerNewPaper: minted > 0 ? income / minted : null, supplyGrowth: first.paper_supply > 0 ? last.paper_supply / first.paper_supply : null };
+}
+
+// 回本所需供应增长：收入/新 PAPER 稳定为 k 时，之后供应增长 g 倍，每枚约得 k × ln(g)。
+export function breakEvenGrowth(costPerPaper, incomePerNewPaper) {
+  if (!Number.isFinite(costPerPaper) || costPerPaper < 0 || !positive(incomePerNewPaper)) return null;
+  return Math.exp(costPerPaper / incomePerNewPaper);
+}
+
+// 同账户（或两个账户）Paper 多空等量对冲，同一笔 Close 意图在同一区块平仓。
+export function pairHedgeCost(instrument, mintRate, move, notional = 10000) {
+  if (!positive(mintRate) || !positive(move) || !positive(notional)) return null;
+  const lose = paperPnl({ notional, priceMove: -move, instrument, mintRate }), win = paperPnl({ notional, priceMove: move, instrument, mintRate });
+  const cost = -(lose.payout + win.payout);
+  return { move, notional, cost, mintedPaper: lose.mintedPaper, costPerPaper: cost / lose.mintedPaper, keep: win.payout / (notional * move) };
+}
+
+// 单向下单、固定胜率，直到预算全部磨损的期望铸币量。move 为 null 表示亏损边等硬清算。
+export function burnEstimate({ instrument, mintRate, notional, leverage, move, budget = 1000, winProbability = 0.5 }) {
+  if (!positive(mintRate) || !positive(notional) || !positive(leverage) || !(winProbability >= 0 && winProbability < 1)) return null;
+  const margin = notional / leverage;
+  let lose, mint, distance;
+  if (move === null) {
+    distance = 1 / leverage - instrument.bustBuffer;
+    if (!positive(distance)) return null;
+    lose = -margin; mint = margin * mintRate;
+  } else {
+    if (!positive(move) || move >= 1 / leverage - instrument.bustBuffer) return null;
+    const l = paperPnl({ notional, priceMove: -move, instrument, mintRate }); lose = l.payout; mint = l.mintedPaper; distance = move;
+  }
+  const win = paperPnl({ notional, priceMove: distance, instrument, mintRate }).payout, p = 1 - winProbability;
+  const expectedLoss = -(p * lose + winProbability * win);
+  if (!positive(expectedLoss)) return null;
+  const costPerPaper = expectedLoss / (p * mint);
+  return { margin, distance, lose, win, mintPerLoss: mint, expectedLossPerTrade: expectedLoss, costPerPaper, expectedPaper: budget / costPerPaper, expectedTrades: budget / expectedLoss };
+}
+
+// LP 打穿风险：交易者净持仓按同一涨跌幅全部兑现时 LP 的变化（未计清算保证金收入与分批平仓，偏保守）。
+export function lpDrainRisk(snapshot, { maxMove = 0.05, step = 0.0001 } = {}) {
+  const p = snapshot?.paper, instruments = snapshot?.trading?.instruments;
+  if (!p || !Number.isFinite(p.trackedLp) || !Number.isFinite(p.cliff) || !Array.isArray(instruments)) return null;
+  const legs = [];
+  for (const i of instruments) {
+    const mid = snapshot.markets?.find(m => m.coin === i.symbol)?.paperMid;
+    if (!positive(mid) || !Number.isFinite(i.longOi) || !Number.isFinite(i.shortOi)) return null;
+    legs.push({ symbol: i.symbol, instrument: i, net: (i.longOi - i.shortOi) * mid, long: i.longOi * mid, short: i.shortOi * mid });
+  }
+  const lpChange = (move, dir) => legs.reduce((sum, l) => {
+    if (l.net === 0) return sum;
+    return l.net * dir > 0 ? sum - paperPnl({ notional: Math.abs(l.net), priceMove: move, instrument: l.instrument }).payout : sum + Math.abs(l.net) * move * 0.98;
+  }, 0);
+  const solve = (dir, buffer) => {
+    if (buffer <= 0) return 0;
+    for (let m = step; m <= maxMove + 1e-12; m += step) if (-lpChange(m, dir) >= buffer) return m;
+    return null;
+  };
+  const toCliff = p.trackedLp - p.cliff, toZero = p.trackedLp;
+  return { legs: legs.map(({ instrument, ...l }) => l), netNotional: legs.reduce((s, l) => s + l.net, 0), trackedLp: p.trackedLp, cliff: p.cliff, bufferToCliff: toCliff,
+    up: { toCliff: solve(1, toCliff), toZero: solve(1, toZero) }, down: { toCliff: solve(-1, toCliff), toZero: solve(-1, toZero) }, flatRateActive: p.trackedLp < p.cliff };
+}

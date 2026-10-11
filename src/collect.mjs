@@ -1,5 +1,7 @@
 import { readExecutionQueue } from './execution-queue.mjs';
 import { readJson, ReadError, checkRpcError } from './read-retry.mjs';
+import { readJumps, scanGovernance, readWebVersions, upcomingEvents, instrumentChanges } from './watch.mjs';
+import { lpDrainRisk } from './model.mjs';
 export const URLS = Object.freeze({ paper: 'https://exchange.papertrade.xyz', info: 'https://api.hyperliquid.xyz/info', rpc: 'https://rpc.hyperliquid.xyz/evm' });
 const BBO = '0x000000000000000000000000000000000000080e';
 const raw = value => { if (typeof value !== 'string' || !/^-?\d+$/.test(value)) throw new Error('Invalid raw amount'); return Number(BigInt(value)) / 1e18; };
@@ -36,6 +38,23 @@ export function parseQueue(q) {
   return { sourceAt: integer(q.source.at), block: String(q.source.block), total: raw(q.total), count: integer(q.count), largest: q.largest, front: q.front, raw: q };
 }
 
+// 官方小时历史：paperRevenue 为单小时值，traderPnl/liquidation/paperSupply/paperStaked/trades 为累计或时点值。
+export function parseProtocolHistory(h, keep = 8) {
+  const names = ['paperRevenue', 'traderPnl', 'liquidation', 'paperSupply', 'paperStaked', 'trades'];
+  if (!Number.isSafeInteger(h?.startMs) || h.intervalMs !== 3600000 || !h.columns || !h.source) throw new Error('Unknown protocol history schema');
+  const length = h.columns.paperSupply?.length;
+  if (!Number.isSafeInteger(length) || names.some(k => !Array.isArray(h.columns[k]) || h.columns[k].length !== length)) throw new Error('Incomplete protocol history columns');
+  const asOf = integer(h.source.asOfMs), hours = [];
+  for (let i = 1; i < length; i++) {
+    const v = Object.fromEntries(names.map(k => [k, finite(h.columns[k][i])])), prev = Object.fromEntries(names.map(k => [k, finite(h.columns[k][i - 1])]));
+    if (v.paperSupply <= 0) continue;
+    const startMs = h.startMs + i * h.intervalMs, minted = v.paperSupply - prev.paperSupply, stakedAvg = (v.paperStaked + prev.paperStaked) / 2;
+    hours.push({ startMs, partial: startMs + h.intervalMs > asOf, revenue: v.paperRevenue, minted, traderPnl: v.traderPnl - prev.traderPnl, liquidationNotional: v.liquidation - prev.liquidation, trades: v.trades - prev.trades,
+      revenuePerNewPaper: minted > 0 ? v.paperRevenue / minted : null, revenuePerPaperHour: stakedAvg > 0 ? v.paperRevenue / stakedAvg : null });
+  }
+  return { sourceAt: asOf, revision: String(h.source.revision ?? ''), hours: hours.slice(-keep) };
+}
+
 export function parseBbo(hex, scale) {
   if (typeof hex !== 'string' || !/^0x[0-9a-fA-F]{128}$/.test(hex) || !(scale > 0)) throw new Error('Invalid BBO precompile response');
   const bid = Number(BigInt('0x' + hex.slice(2, 66))) / scale, ask = Number(BigInt('0x' + hex.slice(66, 130))) / scale;
@@ -45,7 +64,7 @@ export function parseBbo(hex, scale) {
 
 const fetchJson = readJson;
 
-export async function collect({ fetcher = fetch, now = Date.now(), pressureReader = () => readExecutionQueue({ fetcher }) } = {}) {
+export async function collect({ fetcher = fetch, now = Date.now(), pressureReader = () => readExecutionQueue({ fetcher }), previous = null, checkWeb = false, scanGov = false } = {}) {
   const result = { version: 1, collectedAt: now, sources: {}, markets: [], paper: null, balances: null, trading: null, queue: null,
     executionQueue: { available: false, reason: '全球执行队列尚未收到有效状态；个人排名未查询。' }, paperMarketPrice: { value: null, reason: '启动期 PAPER 不可转让；未核实可交易市场，分红和铸币成本不能替代市场报价。' } };
   const jobs = [
@@ -59,6 +78,10 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
       const d = a.latestDistribution;
       return { at: Date.now(), distribution: d === null ? null : { at: integer(d.timestampMs), amount: raw(d.amountRaw), block: String(d.blockNumber), txHash: String(d.txHash), logIndex: integer(d.logIndex) } };
     }],
+    ['protocolHistory', async () => parseProtocolHistory(await fetchJson(URLS.paper + '/query/protocol/history?interval=1h', undefined, fetcher))],
+    ['jumps', () => readJumps({ fetcher, now })],
+    ...(scanGov ? [['governance', () => scanGovernance({ fetcher, previous: previous?.governance ?? null })]] : []),
+    ...(checkWeb ? [['web', () => readWebVersions({ fetcher })]] : []),
     ['context', async () => {
       const context = await fetchJson(URLS.info, { type: 'metaAndAssetCtxs' }, fetcher);
       if (!Array.isArray(context) || !Array.isArray(context[0]?.universe) || !Array.isArray(context[1])) throw new Error('Unknown HL context schema');
@@ -76,6 +99,16 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
   result.rewardAccumulatorRaw = values.summary?.raw.paper.accumulator ?? null;
   result.rewardIndex = result.rewardAccumulatorRaw === null ? null : Number(BigInt(result.rewardAccumulatorRaw)) / 1e27;
   result.latestDistribution = values.paperActivity?.distribution ?? null;
+  result.protocolHours = values.protocolHistory?.hours ?? null;
+  result.jumps = values.jumps ?? null;
+  // 治理扫描失败时沿用上一条记录的游标和已知操作，并标记为过期；不当作“没有新排程”。
+  result.governance = values.governance ?? (previous?.governance ? { ...previous.governance, stale: true } : null);
+  const priorWeb = previous?.web ?? null;
+  if (values.web) {
+    const changed = !!priorWeb && (priorWeb.docs !== values.web.docs || priorWeb.app !== values.web.app);
+    result.web = { ...values.web, changedAt: changed ? values.web.at : priorWeb?.changedAt ?? null, previous: changed ? { docs: priorWeb.docs, app: priorWeb.app, at: priorWeb.at } : priorWeb?.previous ?? null };
+  } else result.web = priorWeb;
+  result.events = upcomingEvents(now);
   result.trading = values.trading ?? null; result.queue = values.queue ?? null;
   result.executionQueue = values.executionQueue ?? { available: false, reason: result.sources.executionQueue.error };
   if (result.trading) delete result.trading.raw;
@@ -130,6 +163,8 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
       for (const m of value.markets ?? [value]) Object.assign(result.markets.find(x => x.coin === m.coin), m);
     } else result.sources[key] = { ok: false, at: null, error: String(s.reason?.message ?? 'Request failed').slice(0, 180) };
   });
+  result.listing = instrumentChanges(result.trading);
+  result.lpRisk = lpDrainRisk(result);
   result.completedAt = Date.now();
   return result;
 }

@@ -1,7 +1,13 @@
 export const columns = ['collected_at', 'paper_source_at', 'paper_supply', 'staked_supply', 'pending_rewards', 'reward_accumulator', 'lp_balance', 'queue_debt', 'queue_count', 'btc_mid', 'eth_mid', 'hype_mid'];
 const queueFields = { execution_source_at: 'sourceAt', execution_queued: 'queuedIntents', execution_submitted: 'submittedIntents', execution_capacity_blocks: 'capacityBlocks', execution_saturation_pct: 'saturationPct' };
-export const exportColumns = [...columns, ...Object.keys(queueFields)];
-const historySelect = [...columns, ...Object.entries(queueFields).map(([name, field]) => `CASE WHEN json_extract(payload, '$.executionQueue.available') = 1 THEN json_extract(payload, '$.executionQueue.${field}') END AS ${name}`)].join(',');
+// 风险监控字段同样从快照 JSON 读取，旧样本为 null；不需要迁移表结构。
+const riskFields = { net_trader_notional: '$.lpRisk.netNotional', lp_up_to_cliff: '$.lpRisk.up.toCliff', lp_up_to_zero: '$.lpRisk.up.toZero', lp_down_to_cliff: '$.lpRisk.down.toCliff', lp_down_to_zero: '$.lpRisk.down.toZero',
+  jump_btc_1s: '$.jumps.BTC.max1s', jump_btc_10s: '$.jumps.BTC.max10s', jump_eth_1s: '$.jumps.ETH.max1s', jump_eth_10s: '$.jumps.ETH.max10s' };
+const countFields = { listing_alerts: '$.listing.alerts', gov_operations: '$.governance.operations' };
+export const exportColumns = [...columns, ...Object.keys(queueFields), ...Object.keys(riskFields), ...Object.keys(countFields)];
+const historySelect = [...columns, ...Object.entries(queueFields).map(([name, field]) => `CASE WHEN json_extract(payload, '$.executionQueue.available') = 1 THEN json_extract(payload, '$.executionQueue.${field}') END AS ${name}`),
+  ...Object.entries(riskFields).map(([name, path]) => `json_extract(payload, '${path}') AS ${name}`),
+  ...Object.entries(countFields).map(([name, path]) => `CASE WHEN json_type(payload, '${path}') = 'array' THEN json_array_length(payload, '${path}') END AS ${name}`)].join(',');
 
 export async function saveSnapshot(db, snapshot) {
   if (!db) return false;
