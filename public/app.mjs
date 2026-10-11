@@ -180,6 +180,6 @@ $('copyPlan').addEventListener('click', async () => {
   const p = plan, text = [`${p.coin} 对冲方案（仅测算；确认实际成交后再匹配数量）`, `采集时间：${time(snapshot.collectedAt)}`, `Paper ${p.config.paperLong ? '多' : '空'}：${p.quantity} ${p.coin}，保证金 ${p.paperMargin.toFixed(4)} U，${p.config.paperLeverage}x，参考价 ${p.prices.paperEntry}`, `HL ${p.hedgeLong ? '多' : '空'}：${p.quantity} ${p.coin}，${p.config.hedgeLeverage}x，订单簿 VWAP ${p.hedgeEntry.toFixed(4)}，最低保证金估计 ${p.marginMinimum.toFixed(2)} U + 浮亏缓冲`, `先确认 Paper 提交/成交状态与真实入场价；HL 使用价格限制并匹配已成交数量；任何一腿失败即停止加仓，处理已有敞口。`, `止损/止盈参考价：${p.scenarios.map(b => b.exitMid.toFixed(4)).join(' / ')}；HL 平仓使用 reduce-only，数量以真实仓位为准。`, `Paper 亏损分支组合盈亏 ${p.scenarios[0].pnl.toFixed(4)} U / 铸币 ${p.scenarios[0].mintedPaper.toFixed(4)} PAPER`, `Paper 盈利分支组合盈亏 ${p.scenarios[1].pnl.toFixed(4)} U / 不铸币`, ...p.warnings].join('\n');
   try { await navigator.clipboard.writeText(text); set('copyResult', '方案已复制；不会提交订单。'); } catch { set('copyResult', '浏览器禁止剪贴板，请根据上方参数手动操作。'); }
 });
-await refresh(); await refreshHistory();
+await Promise.all([refresh(), refreshHistory()]);
 setInterval(refresh, 10000); setInterval(refreshHistory, 60000);
 setInterval(() => { if (snapshot) render(); }, 5000);

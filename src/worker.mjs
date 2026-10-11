@@ -1,18 +1,26 @@
 import { collect } from './collect.mjs';
 import { saveSnapshot, latestSnapshot, getHistory, purgeExpired, exportDay, exportSnapshots } from './storage.mjs';
 
-let pending = null, hot = null;
-export async function liveSnapshot() {
+// Workers 不能跨请求共享进行中的 I/O：发起采集的请求被客户端取消后，共享的 Promise 永远不结束，
+// 同一实例后续未命中缓存的 /api/live 会全部挂起。所以每个请求自己采集，只复用 8 秒内已完成的结果，
+// 并加整体时限，超时返回 503 而不是挂住。
+let hot = null;
+export async function liveSnapshot({ collector = collect, deadlineMs = 20000 } = {}) {
   if (hot && Date.now() - hot.completedAt < 8000) return hot;
-  pending ??= collect().then(s => { hot = s; return s; }).finally(() => { pending = null; });
-  return pending;
+  let timer;
+  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('实时采集超时')), deadlineMs); });
+  try { const snapshot = await Promise.race([collector(), timeout]); hot = snapshot; return snapshot; }
+  finally { clearTimeout(timer); }
 }
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 
 export async function api(request, db) {
   const url = new URL(request.url);
   if (request.method !== 'GET') return json({ error: 'Only GET requests are accepted' }, 405);
-  if (url.pathname === '/api/live') return json(await liveSnapshot());
+  if (url.pathname === '/api/live') {
+    try { return json(await liveSnapshot()); }
+    catch (error) { return json({ error: '实时数据暂不可用：' + String(error.message ?? error).slice(0, 120) }, 503); }
+  }
   if (url.pathname === '/api/health') return json({ ok: true, storage: db ? 'configured' : 'unconfigured', mode: 'public-read-only', historyRetentionDays: 90 });
   if (!db) return json({ error: '历史数据库尚未绑定；实时查询仍可使用。', storage: 'unconfigured' }, 503);
   if (url.pathname === '/api/latest') return json({ snapshot: await latestSnapshot(db) });
@@ -38,6 +46,7 @@ export default {
       const cache = caches.default, key = new Request(url.origin + '/api/live');
       const cached = await cache.match(key); if (cached) return cached;
       const response = await api(request, env.DB);
+      if (!response.ok) return response;
       response.headers.set('Cache-Control', 'public, max-age=8');
       ctx.waitUntil(cache.put(key, response.clone()));
       return response;
