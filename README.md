@@ -2,7 +2,7 @@
 
 只读网站、终端采集器与对冲成本计算器。预算默认 Paper 1000 USDC，HL 对冲保证金另计。不会连接钱包、签名或者提交订单。
 
-线上地址：[papertrade-monitor.papertrade-monitor.workers.dev](https://papertrade-monitor.papertrade-monitor.workers.dev/)。代码仓库为 `bibi45c/papertrade-monitor`，私有源码与公开行情网站分别托管。
+线上地址：[papertrade-monitor.papertrade-monitor.workers.dev](https://papertrade-monitor.papertrade-monitor.workers.dev/)。[页面代码](https://github.com/bibi45c/papertrade-monitor)与 [1 分钟历史数据归档](https://github.com/bibi45c/papertrade-monitor-data)均为公开仓库。部分时间段数据不完整，请结合归档清单中的缺口与来源状态判断。
 
 ## 数据存放
 
