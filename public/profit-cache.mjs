@@ -1,4 +1,5 @@
-export const CACHE_KEY = 'papertrade:profit-path:v2';
+import { language } from './i18n.mjs';
+export const CACHE_KEY = 'papertrade:profit-path:v2:' + language;
 export const MAX_AGE = 15 * 60000;
 export const FIELDS = ['incomePerNew', 'incomePerNewNote', 'stakerShare', 'paperYield', 'paperYieldNote', 'currentCost', 'currentCostNote', 'supplyGrowth', 'pathState', 'burnHeading'];
 export const TABLES = { pathCompare: 3, pathTable: 4, burnTable: 7, protocolHours: 7 };

@@ -30,7 +30,7 @@ await enrich();
 setInterval(enrich, 5 * 60000).unref();
 const port = Number(process.env.PORT ?? 8787);
 const types = { html: 'text/html;charset=utf-8', css: 'text/css;charset=utf-8', mjs: 'text/javascript;charset=utf-8', svg: 'image/svg+xml' };
-const allowed = new Set(['index.html', 'style.css', 'app.mjs', 'model.mjs', 'profit-cache.mjs', 'favicon.svg']);
+const allowed = new Set(['index.html', 'style.css', 'app.mjs', 'model.mjs', 'profit-cache.mjs', 'i18n.mjs', 'translations.mjs', 'favicon.svg']);
 http.createServer(async (req, res) => {
   const origin = `http://127.0.0.1:${port}`;
   try {
