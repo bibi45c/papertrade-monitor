@@ -2,7 +2,7 @@
 
 只读网站、终端采集器与对冲成本计算器。预算默认 Paper 1000 USDC，HL 对冲保证金另计。不会连接钱包、签名或者提交订单。
 
-线上地址：[papertrade-monitor.papertrade-monitor.workers.dev](https://papertrade-monitor.papertrade-monitor.workers.dev/)。代码仓库为 `bibi45c/papertrade-monitor`，私有源码与公开行情网站分别托管。
+线上地址：[papertrade-monitor.papertrade-monitor.workers.dev](https://papertrade-monitor.papertrade-monitor.workers.dev/)。[页面代码](https://github.com/bibi45c/papertrade-monitor)与 [1 分钟历史数据归档](https://github.com/bibi45c/papertrade-monitor-data)均为公开仓库。部分时间段数据不完整，请结合归档清单中的缺口与来源状态判断。
 
 ## 数据存放
 
@@ -19,12 +19,18 @@
 
 ## 已接入指标
 
-- Hyperliquid BTC / ETH / HYPE：买一、卖一、订单簿深度、标记价、预言机价、资金费、数量精度、最大杠杆、保证金档位原始数据。
+- Hyperliquid BTC / ETH：买一、卖一、订单簿深度、标记价、预言机价、资金费、数量精度、最大杠杆、保证金档位原始数据。停止请求 HYPE 订单簿；MARKET SNAPSHOT 表格已从页面移除，BTC/ETH 底层数据继续用于成本计算和历史存储。
 - Paper BTC / ETH：通过 `0x...080e` BBO 预编译读取同一 HyperEVM 区块的报价，使用官方每个市场的价格精度；HYPE 不是当前 Paper 对冲交易市场。
 - Paper 协议：TVL、可用 LP、保证金、PAPER 供应、质押、待分配奖励、发行曲线、高水位、累计分红指数、最近一次分配事件、交易开关和最小仓位。
 - 兑付队列：总债务、笔数与队首原始信息。全球下单队列：官方 `pressure:current` 公共状态流的等待/已提交笔数、Gas 容量折算、提交压力、前 10 条优先顺序与等待年龄。个人排名未接入；兑付队列为空不等于没有下单等待。
 - PAPER 交易市场价尚未核实，显示不可用；铸币成本和分红份额不充当市场价格。
-- 盈利路径面板：每 1 万枚新 PAPER 对应质押收入、质押者拿走的亏损比例、每 1 万枚 PAPER 每小时分红（最近 2 小时分钟历史，需 48 分钟以上连续样本，否则显示样本不足）；Paper 多空对冲、HL 对冲、单纯亏损的每 1 万枚 PAPER 成本与回本所需供应增长 exp(成本 ÷ 收入比率)；1000 U、50% 胜率、最小名义的磨损估计；官方小时统计 `/query/protocol/history?interval=1h`（快照字段 `protocolHours`）。网页与终端的单位收入、成本及区间分红统一按 1 万枚展示；底层模型、历史原始数据和 API 字段仍按原口径保存，展示时换算，回本倍数与时间不受影响。
+- 盈利路径面板：主屏突出每 1 万枚 PAPER 每小时分红（48 个完整小时、12 小时半衰期）与获取每 1 万枚 PAPER 的当前估算净损耗（默认 Paper 多空对冲、波动 1% 一起平）。优先用实际分红指数，缺口用官方小时收入除以平均质押量估算，明确标注实测/估算及覆盖率。成本使用当前参数，不做历史平均。路径成本比较保留；收入比率、供应增长回本和磨损估算移入折叠详情。HL 对冲保留灰色删除线，单纯方向亏损行移除；回本增长超过 100 倍显示“回本门槛过高（>100 倍）”。[完整口径](docs/profit-path-48h-2026-10-14.md)。
+
+采集修复将分钟核心快照与每 5 分钟的治理、小时统计分开，新增 `0002_auxiliary.sql` 增量迁移；Binance 秒级采集停用，历史字段保留。LP 风险由浏览器推导，新历史快照相应导出字段为空。顺序预览未提供时保留全局执行队列统计，继续阻止手动方案。实现、恢复来源、验收与回滚见 [采集修复说明](docs/collector-reliability-2026-10-14.md)。本地实现通过不代表生产 CPU 问题已解决，部署后仍需观察。
+
+PROFIT PATH 使用浏览器本地缓存：有有效 48 小时窗口时保存展示结果，刷新先显示缓存并标注旧值，再更新小时边界指数与辅助小时统计。缓存按源数据更新时间最多保留 15 分钟，不延长旧数据寿命。缓存只供查看，不恢复历史缺口，也不用于解除手动方案的安全检查；浏览器禁止存储时正常加载在线数据。新版缓存键为 `papertrade:profit-path:v2`，旧版一分钟窗口缓存不复用。
+
+`/api/dividend-history` 是只读小型接口，返回过去 48 小时整点前后两分钟内的 `collected_at`、精确字符串 `reward_accumulator`，以及最新样本；最多 246 行。辅助状态保留最近 49 条小时统计，以取得 48 个完整小时；分钟原始快照仅保留最近 8 条辅助小时数据，避免放大每分钟计算和归档体积。`/api/latest`、`/api/live` 的展示视图附加完整辅助状态，原始归档记录不重写。
 
 每个来源标记自己的成功状态、时间和区块。HL context 与 Paper trading 的时间是收到响应的时间；Paper 协议、BBO 和 HL 订单簿有来源时间。数据超过 30 秒、参数落后 30 个区块、兑付队列非空、开平仓被禁止、深度不足或清算距离太近时，阻止复制方案。
 
@@ -79,7 +85,7 @@ npm run cloud:setup
 npm run deploy
 ```
 
-`cloud:setup` 为本项目创建 `papertrade-monitor` D1，绑定名 `DB`，区域提示 `apac`，并运行首次迁移。生产与本地 SQLite 是两份独立数据；本地样本不会自动上传云端。
+`cloud:setup` 根据 `wrangler.jsonc` 中的 `database_name` 创建 D1（默认 `papertrade-monitor`），绑定名 `DB`，区域提示 `apac`，并应用所有待运行迁移，包括 `0002_auxiliary.sql`。生产与本地 SQLite 是两份独立数据；本地样本不会自动上传云端。
 
 部署后检查 `/api/health` 与 `/api/live`；等待至少两个 Cron 周期，再检查 `/api/history` 有持续样本。看到首页或者部署成功不等于后台已持续采集。
 
@@ -88,6 +94,45 @@ npm run deploy
 `npm run cloud:verify` 只读验收线上行情、两条以上的新鲜历史记录、CSV 和拒绝 POST。最多等待 15 分钟，每分钟检查一次。如已确认本机解析异常，可运行 `npm run cloud:verify -- --public-dns`；这只为该次请求使用 Cloudflare 公共 DNS，保留域名和 TLS 校验，不修改系统网络设置，不能证明普通浏览器的解析已恢复。
 
 GitHub 检查工作流只运行测试与打包，不保存 Cloudflare OAuth 凭据、不自动发布。可用 Cloudflare 的 GitHub Builds 连接仓库，或在本地使用 `npm run deploy` 发布；连接新的 GitHub 应用需要账户本人授权。
+
+## Fork 后需要修改什么
+
+本地运行不需要交易 API key、钱包私钥或 Cloudflare 凭据；全部市场查询使用公开接口。Fork 不会复制原作者的 D1 数据或 Cloudflare 登录状态。
+
+| 配置 | Fork 后的处理 |
+| --- | --- |
+| `wrangler.jsonc` 的 `name` | 改成你自己的 Worker 名称，例如 `my-papertrade-monitor`。 |
+| `d1_databases[].database_name` | 改成你自己的数据库名称，例如 `my-papertrade-data`。 |
+| `d1_databases[].database_id` | **删除原值**；运行 `npm run cloud:setup` 创建你账户下的数据库并写入新 ID。已有数据库则填你自己的 ID。ID 是公开资源标识，不是访问密钥。 |
+| `d1_databases[].binding` 和 `assets.binding` | 保留 `DB`、`ASSETS`，代码按这两个名字读取绑定。 |
+| `triggers.crons` | 保留两个任务：每分钟核心采集、每 5 分钟辅助采集。治理任务由 cron 字符串分流；修改前同步修改 `src/worker.mjs`。 |
+| Cloudflare 账户 | 用你自己的账户执行 `npm run cf:login`，随后 `npm run cf:whoami` 确认。多账户时可在配置中填自己的 `account_id`，不得复用他人的凭据。 |
+| 线上验证与恢复脚本 | 设置 `MONITOR_ORIGIN` 为你部署后的 HTTPS 地址；否则默认会查询原作者的网站。 |
+| README / `docs/data-archive.md` 中的网址与仓库名 | 改成自己的 Worker 地址、代码仓库及数据仓库地址。 |
+
+Fork 后，在配置中删除原数据库 ID、修改上述名称，再执行：
+
+```powershell
+npm ci
+npm run check
+npm test
+npm run cf:login
+npm run cf:whoami
+npm run cloud:setup
+npm run deploy
+$env:MONITOR_ORIGIN = 'https://my-papertrade-monitor.YOUR-SUBDOMAIN.workers.dev'
+npm run cloud:verify
+# 可选：补抓可重建的小时记录与治理日志，仅写入本地 data/recovered/
+node scripts/repair-history.mjs
+```
+
+请以部署输出的真实 URL 设置 `MONITOR_ORIGIN`。默认域名包含你的 Workers 子域名，仅修改 Worker 名不够。`scripts/publish_github.py` 是原作者首次建仓库的辅助脚本，含原作者仓库名；正常 fork 和部署**不运行它**。GitHub Actions 仅做检查，无需配置 Cloudflare secret。若另外启用部署 CI，请把凭据放入 GitHub/Cloudflare 的 secret 存储，并给最小权限。
+
+若需要独立数据归档，还应单独 fork 数据仓库，按其 README 配置来源 Worker 地址与 Actions 写入权限；仅 fork 本项目不会自动归档到 GitHub。
+
+不要提交 `.env*`、`.dev.vars*`、OAuth 配置、API token、日志或本地数据库。本项目 `.gitignore` 已忽略常用环境文件、`data/`、`.wrangler/` 和日志。公开合约地址、Worker 地址和 D1 ID 不等于密钥；凭据一旦进入 Git 历史，仅删除当前文件无法撤回，需先撤销或轮换凭据。
+
+本仓库当前为私有仓库，fork 需要仓库访问权；本次没有更改可见性。[2026-10-14 凭据检查范围与结果](docs/credential-audit-2026-10-14.md)记录了源码、配置和可达历史的检查。
 
 ## 验收和恢复
 

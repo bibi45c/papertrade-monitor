@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { breakEvenGrowthLabel } from '../src/model.mjs';
 import assert from 'node:assert/strict';
 import { emissionRate, paperPnl, makePlan, vwap, roundSize, stakerIncomeWindow, breakEvenGrowth, pairHedgeCost, burnEstimate } from '../src/model.mjs';
 const instrument = { id: 0, symbol: 'BTC', rateMultiplier: 15000, positionMultiplier: 814.598, referenceNotional: 100000, baseRate: .1, bustBuffer: .0005, openable: true, maxLeverage: 1000, maxPositionNotional: 1e7, longOi: 100, shortOi: 100, longCap: 1e6, shortCap: 1e6 };
@@ -79,6 +80,13 @@ test('staker income per new PAPER combines distributions and pending changes, ne
 test('break-even supply growth is exp(cost / income per new PAPER)', () => {
   assert.ok(Math.abs(breakEvenGrowth(0.002, 0.002) - Math.E) < 1e-12);
   assert.equal(breakEvenGrowth(0.002, 0), null); assert.equal(breakEvenGrowth(NaN, 0.01), null);
+});
+
+test('excessive and overflowing growth is distinct from missing data', () => {
+  assert.equal(breakEvenGrowthLabel(100), '×100.00');
+  assert.equal(breakEvenGrowthLabel(100.01), '回本门槛过高（>100 倍）');
+  assert.equal(breakEvenGrowthLabel(Infinity), '回本门槛过高（>100 倍）');
+  assert.equal(breakEvenGrowthLabel(null), '样本不足 / 不可用');
 });
 test('Paper long+short hedge costs only the win haircut and mints on the losing leg', () => {
   const h = pairHedgeCost(instrument, 100, 0.01);

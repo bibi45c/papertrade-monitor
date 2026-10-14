@@ -24,6 +24,16 @@ export async function latestSnapshot(db) {
   return row ? JSON.parse(row.payload) : null;
 }
 
+export async function loadAuxiliary(db) {
+  const row = await db.prepare("SELECT payload FROM auxiliary_state WHERE name = 'current'").first();
+  return row ? JSON.parse(row.payload) : null;
+}
+
+export async function saveAuxiliary(db, state) {
+  await db.prepare("INSERT INTO auxiliary_state (name, updated_at, payload) VALUES ('current', ?, ?) ON CONFLICT(name) DO UPDATE SET updated_at = excluded.updated_at, payload = excluded.payload WHERE excluded.updated_at > auxiliary_state.updated_at")
+    .bind(state.collectedAt, JSON.stringify(state)).run();
+}
+
 // Full stored payloads, without aggregation or numeric conversion. Bounded pages
 // allow the archive to keep exact raw strings and source failure information.
 export async function exportSnapshots(db, { after = 0, through = Date.now(), limit = 120 } = {}) {
@@ -40,6 +50,18 @@ export async function getHistory(db, hours = 24, now = Date.now()) {
   const bucket = Math.max(60000, Math.ceil(bounded * 60 / 1440) * 60000);
   const rows = await db.prepare(`SELECT ${historySelect} FROM snapshots WHERE collected_at IN (SELECT MAX(collected_at) FROM snapshots WHERE collected_at >= ? GROUP BY CAST(collected_at / ? AS INTEGER)) ORDER BY collected_at`).bind(now - bounded * 3600000, bucket).all();
   return { hours: bounded, bucketMs: bucket, rows: rows.results ?? [] };
+}
+
+// Small public response: exact index strings near hourly boundaries plus the latest
+// sample. No payload JSON extraction or synthetic filling of missing boundaries.
+export async function getDividendHistory(db, now = Date.now()) {
+  const endAt = Math.floor(now / 3600000) * 3600000, from = endAt - 48 * 3600000 - 120000;
+  const data = await db.prepare(`SELECT collected_at, reward_accumulator FROM snapshots
+    WHERE collected_at >= ? AND collected_at <= ? AND
+    ((collected_at <= ? AND (collected_at % 3600000 <= 120000 OR collected_at % 3600000 >= 3480000))
+      OR collected_at = (SELECT MAX(collected_at) FROM snapshots))
+    ORDER BY collected_at LIMIT 246`).bind(from, now, endAt + 120000).all();
+  return { hours: 48, endAt, boundaryToleranceMs: 120000, rows: data.results ?? [] };
 }
 
 export async function purgeExpired(db, now) {

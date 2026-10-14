@@ -1,7 +1,8 @@
 import https from 'node:https';
 
 // Read-only production acceptance. This never loads deployment credentials.
-const origin = 'https://papertrade-monitor.papertrade-monitor.workers.dev';
+const origin = new URL(process.env.MONITOR_ORIGIN ?? 'https://papertrade-monitor.papertrade-monitor.workers.dev').origin;
+if (!origin.startsWith('https://')) throw new Error('MONITOR_ORIGIN must use HTTPS');
 const publicDns = process.argv.includes('--public-dns');
 let verifiedAddress;
 if (publicDns) {
@@ -45,8 +46,12 @@ async function json(path) {
 const health = await json('/api/health');
 if (health.storage !== 'configured' || health.mode !== 'public-read-only') throw new Error('Unexpected storage or mode');
 const live = await json('/api/live');
-const failed = Object.entries(live.sources).filter(([, source]) => !source.ok).map(([name]) => name);
+const required = ['summary', 'trading', 'queue', 'paperActivity', 'context', 'book_BTC', 'book_ETH', 'paperBbo', 'executionQueue'];
+const failed = required.filter(name => live.sources[name]?.ok !== true);
 console.log(JSON.stringify({ check: 'live', collectedAt: live.collectedAt, failedSources: failed }));
+console.log(JSON.stringify({ check: 'auxiliary', auxiliaryAt: live.auxiliaryAt ?? null,
+  sources: Object.fromEntries(['governance', 'protocolHistory', 'web'].map(name => [name, live.sources[name] ?? null])),
+  governanceGaps: live.governance?.gaps?.length ?? null, disabledJumps: live.sources.jumps?.disabled === true }));
 if (failed.length || Date.now() - live.collectedAt > 30000) throw new Error('Live data unavailable or stale');
 const rejected = await request('/api/live', 'POST');
 if (rejected.status !== 405) throw new Error('Public API must reject POST');
@@ -68,7 +73,7 @@ const csv = await request('/api/export.csv?day=' + day);
 if (csv.status !== 200 || !csv.headers['content-type']?.startsWith('text/csv') ||
     !csv.body.startsWith('collected_at,') || csv.body.trim().split('\n').length < 3) throw new Error('CSV export verification failed');
 const latest = await json('/api/latest');
-const latestFailures = Object.entries(latest.snapshot.sources).filter(([, source]) => !source.ok).map(([name]) => name);
+const latestFailures = required.filter(name => latest.snapshot.sources[name]?.ok !== true);
 console.log(JSON.stringify({ check: 'complete', origin, samples: history.rows.length, csvDataRows: csv.body.trim().split('\n').length - 1,
   latestCollectedAt: latest.snapshot.collectedAt, latestFailedSources: latestFailures, publicPostStatus: rejected.status }));
 if (latestFailures.length) throw new Error('Latest persisted sample contains source failures');

@@ -15,9 +15,19 @@ test('public execution queue differs from payout debt and keeps gas strings with
   assert.equal(q.preview[0].estimatedGas, '335000'); assert.equal('intentId' in q.preview[0], false); assert.equal(q.personalRank, null);
 });
 test('stale, unknown or internally inconsistent publications are rejected rather than zeroed', () => {
-  for (const mutate of [p => p.snapshot.ts -= 6000, p => p.snapshot.stale = true, p => p.snapshot.chain.latestBlockTimestampMs -= 16000, p => p.snapshot.totalPendingGas = '0', p => delete p.snapshot.queuedIntents, p => p.snapshot.queuePreview = [], p => p.snapshot.queuePreview[0].action = 'unknown', p => p.snapshot.blockGasLimit = '0']) {
+  for (const mutate of [p => p.snapshot.ts -= 6000, p => p.snapshot.stale = true, p => p.snapshot.chain.latestBlockTimestampMs -= 16000, p => p.snapshot.totalPendingGas = '0', p => delete p.snapshot.queuedIntents, p => p.snapshot.queuePreview = null, p => p.snapshot.queuePreview[0].action = 'unknown', p => p.snapshot.blockGasLimit = '0']) {
     const p = publication(); mutate(p); assert.throws(() => parseExecutionQueue(p));
   }
+});
+
+test('current public schema without preview preserves aggregate counts but cannot imply zero waiting', () => {
+  const p = publication(); delete p.snapshot.queuePreview;
+  const q = parseExecutionQueue(p);
+  assert.equal(q.available, true); assert.equal(q.queuedIntents, 1); assert.equal(q.previewAvailable, false); assert.deepEqual(q.preview, []);
+  p.snapshot.queuePreview = []; assert.equal(parseExecutionQueue(p).previewAvailable, false);
+  p.snapshot.queuedIntents = 0; p.snapshot.totalQueuedGas = '0'; p.snapshot.totalPendingGas = '0';
+  assert.equal(parseExecutionQueue(p).previewAvailable, true);
+  p.snapshot.chain.blocks = [{ number: 122 }]; assert.throws(() => parseExecutionQueue(p), /latest block/);
 });
 class Socket extends EventTarget {
   readyState = 1;

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeLog, describeCall, instrumentChanges, classifyMarket, jumpStats, upcomingEvents, KNOWN_OPERATIONS, GOVERNANCE } from '../src/watch.mjs';
 import { lpDrainRisk } from '../src/model.mjs';
+import { scanGovernance, mergeBlockRanges } from '../src/watch.mjs';
 
 // 2026-10-11 区块 48191335 的真实日志：多签执行 timelock.schedule，timelock 发出排程事件。
 const scheduled = { address: '0xb915fa41e824d6aa31bb833ee81220c0f2c8ea0f', blockNumber: '0x2df5767', transactionHash: '0xad38ffd14ec3032301199d3af3388599c483c963b1ce478e9e78d3bb36ac2f3d',
@@ -51,4 +52,28 @@ test('LP drain risk solves the move that pushes tracked LP to the flat-rate thre
   assert.equal(r.down.toCliff, null, 'net long traders lose when price falls');
   assert.equal(lpDrainRisk({ paper: { trackedLp: 1e6, cliff: 2e6 }, trading: trading([]), markets: [] }).flatRateActive, true);
   assert.equal(lpDrainRisk({ paper: null }), null);
+});
+
+test('governance coverage heals oldest gaps without forgetting more than ten ranges', async () => {
+  const gaps = Array.from({ length: 12 }, (_, i) => [i * 2000, i * 2000 + 1500]);
+  const calls = [];
+  const s = await scanGovernance({ previous: { lastScannedBlock: 30000, gaps }, maxChunks: 3, fetcher: async (_url, options) => {
+    const q = JSON.parse(options.body);
+    if (q.method === 'eth_blockNumber') return Response.json({ result: '0x' + (30300).toString(16) });
+    calls.push(q.params[0]); return Response.json({ result: [] });
+  } });
+  assert.equal(calls.length, 3); assert.equal(Number(calls[0].fromBlock), 30001);
+  assert.equal(Number(calls[1].fromBlock), 0); assert.equal(Number(calls[2].fromBlock), 1000);
+  assert.equal(s.gaps.length, 11); assert.equal(s.gaps[0][0], 2000); assert.equal(s.coverageComplete, false);
+  assert.deepEqual(mergeBlockRanges([[5, 10], [0, 4], [8, 15], [25, 30]]), [[0, 15], [25, 30]]);
+});
+
+test('failed governance chunks remain pending while successful live coverage is retained', async () => {
+  const s = await scanGovernance({ previous: { lastScannedBlock: 2000, gaps: [[0, 500]] }, fetcher: async (_url, options) => {
+    const q = JSON.parse(options.body);
+    if (q.method === 'eth_blockNumber') return Response.json({ result: '0x834' });
+    return Number(q.params[0].fromBlock) === 0 ? Response.json({ error: { code: -32602, message: 'invalid params' } }) : Response.json({ result: [] });
+  } });
+  assert.equal(s.lastScannedBlock, 2100); assert.deepEqual(s.gaps, [[0, 500]]); assert.equal(s.readErrors.length, 1);
+  assert.equal(s.coverageComplete, false);
 });

@@ -8,6 +8,7 @@ export function executionQueueStatus(snapshot, now = Date.now()) {
   const q = snapshot?.executionQueue, source = snapshot?.sources?.executionQueue;
   const fresh = !!q?.available && source?.ok === true && Number.isFinite(q.sourceAt) && now - q.sourceAt <= 15000 && q.sourceAt <= now + 5000;
   if (!fresh) return { fresh: false, busy: false, reason: '下单队列过期或不可用，不能据此安排两腿成交' };
+  if (q.previewAvailable === false) return { fresh: false, busy: false, oldestPreviewSeconds: null, reason: '全球队列统计有效，但官方未提供顺序预览；等待年龄未知，手动两腿方案保持阻止' };
   const oldest = q.preview.length ? Math.max(...q.preview.map(p => Math.max(0, now - p.acceptedAt) / 1000)) : 0;
   const busy = q.capacityBlocks > 3 || q.saturationPct >= 95 || oldest > 30;
   return { fresh: true, busy, oldestPreviewSeconds: oldest,
@@ -154,10 +155,59 @@ export function stakerIncomeWindow(rows, minutes) {
     incomePerNewPaper: minted > 0 ? income / minted : null, supplyGrowth: first.paper_supply > 0 ? last.paper_supply / first.paper_supply : null };
 }
 
+// Complete UTC hours only. Prefer exact per-token index changes; a missing
+// boundary may use official revenue / average stake, explicitly an estimate.
+export function dividendWindow48(rows = [], protocolHours = [], now = Date.now()) {
+  const hour = 3600000, endAt = Math.floor(now / hour) * hour, startAt = endAt - 48 * hour;
+  const points = rows.filter(r => Number.isSafeInteger(r?.collected_at) && r.collected_at <= now && typeof r.reward_accumulator === 'string' && /^\d+$/.test(r.reward_accumulator)).sort((a, b) => a.collected_at - b.collected_at);
+  const official = new Map();
+  for (const h of protocolHours) if (Number.isSafeInteger(h?.startMs) && !h.partial) official.set(h.startMs, official.has(h.startMs) ? null : h);
+  const nearest = at => {
+    let best = null, distance = 120001;
+    for (const p of points) { const d = Math.abs(p.collected_at - at); if (d < distance) { best = p; distance = d; } }
+    return best;
+  };
+  const bins = []; let totalWeight = 0, validWeight = 0, weighted = 0, sum = 0, measuredHours = 0, estimatedHours = 0;
+  let ratioWeight = 0, ratioHours = 0, revenue = 0, minted = 0;
+  for (let i = 0; i < 48; i++) {
+    const at = startAt + i * hour, weight = 2 ** (-(47 - i) / 12), a = nearest(at), b = nearest(at + hour), h = official.get(at);
+    totalWeight += weight; let rate = null, kind = 'missing';
+    if (a && b && b.collected_at > a.collected_at) {
+      const delta = BigInt(b.reward_accumulator) - BigInt(a.reward_accumulator);
+      if (delta >= 0n) { rate = Number(delta) / 1e27 * hour / (b.collected_at - a.collected_at); kind = 'measured'; }
+    }
+    if (!Number.isFinite(rate) || rate < 0) {
+      rate = Number.isFinite(h?.revenuePerPaperHour) && h.revenuePerPaperHour >= 0 ? h.revenuePerPaperHour : null;
+      kind = rate === null ? 'missing' : 'estimated';
+    }
+    if (rate !== null) { validWeight += weight; weighted += weight * rate; sum += rate; if (kind === 'measured') measuredHours++; else estimatedHours++; }
+    if (Number.isFinite(h?.revenue) && h.revenue >= 0 && Number.isFinite(h.minted) && h.minted >= 0) {
+      ratioWeight += weight; ratioHours++; revenue += weight * h.revenue; minted += weight * h.minted;
+    }
+    bins.push({ startMs: at, weight, rate, kind });
+  }
+  const validHours = measuredHours + estimatedHours, coverage = validWeight / totalWeight;
+  const available = validHours >= 36 && coverage >= .8;
+  const first = official.get(startAt), last = official.get(endAt - hour);
+  const initialSupply = first?.paperSupply - first?.minted;
+  return { startAt, endAt, hours: 48, halfLifeHours: 12, available, validHours, measuredHours, estimatedHours, coverage,
+    weightedPerPaperHour: available ? weighted / validWeight : null,
+    meanPerPaperHour: available ? sum / validHours : null,
+    incomePerNewPaper: ratioHours >= 36 && ratioWeight / totalWeight >= .8 && minted > 0 ? revenue / minted : null,
+    supplyGrowth: official.size >= 48 && initialSupply > 0 && Number.isFinite(last?.paperSupply) ? last.paperSupply / initialSupply : null,
+    bins };
+}
+
 // 回本所需供应增长：收入/新 PAPER 稳定为 k 时，之后供应增长 g 倍，每枚约得 k × ln(g)。
 export function breakEvenGrowth(costPerPaper, incomePerNewPaper) {
   if (!Number.isFinite(costPerPaper) || costPerPaper < 0 || !positive(incomePerNewPaper)) return null;
   return Math.exp(costPerPaper / incomePerNewPaper);
+}
+
+export function breakEvenGrowthLabel(growth) {
+  if (growth === null || growth === undefined || Number.isNaN(growth)) return '样本不足 / 不可用';
+  if (growth > 100) return '回本门槛过高（>100 倍）';
+  return '×' + growth.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // 同账户（或两个账户）Paper 多空等量对冲，同一笔 Close 意图在同一区块平仓。
