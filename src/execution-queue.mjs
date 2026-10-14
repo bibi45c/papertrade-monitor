@@ -18,18 +18,21 @@ export function parseExecutionQueue(publication, now = Date.now()) {
   if (BigInt(blockGasLimit) <= 0n || BigInt(pendingGas) !== BigInt(queuedGas) + BigInt(submittedGas)) throw new Error('Inconsistent execution queue gas');
   const blocks = (BigInt(pendingGas) + BigInt(blockGasLimit) - 1n) / BigInt(blockGasLimit);
   if (blocks > BigInt(Number.MAX_SAFE_INTEGER) || !Number.isFinite(s.saturationPct) || s.saturationPct < 0) throw new Error('Invalid execution queue capacity');
-  if (!Array.isArray(s.queuePreview) || s.queuePreview.length > 10 || !Array.isArray(chain.blocks) || chain.blocks.at(-1)?.number !== block) throw new Error('Inconsistent execution queue preview or latest block');
-  const preview = s.queuePreview.map(p => {
+  if (!Array.isArray(chain.blocks) || chain.blocks.at(-1)?.number !== block) throw new Error('Inconsistent execution queue latest block');
+  const hasPreview = s.queuePreview !== undefined;
+  if (hasPreview && (!Array.isArray(s.queuePreview) || s.queuePreview.length > 10)) throw new Error('Invalid execution queue preview');
+  const preview = (s.queuePreview ?? []).map(p => {
     if (!actions.has(p.action)) throw new Error('Unknown queued action');
     const acceptedAt = integer(p.acceptedAtMs);
     if (acceptedAt > at + 5000) throw new Error('Queued action has a future acceptance time');
     return { action: p.action, priorityClass: integer(p.priorityClass), estimatedGas: gas(p.estimatedGas), acceptedAt };
   });
   const counts = Object.fromEntries(['pendingCount', 'activeIntents', 'submittedIntents', 'queuedIntents'].map(k => [k, integer(s[k])]));
-  if ((counts.queuedIntents === 0 && preview.length) || (counts.queuedIntents > 0 && !preview.length)) throw new Error('Execution queue count disagrees with preview');
+  if (counts.queuedIntents === 0 && preview.length) throw new Error('Execution queue count disagrees with preview');
+  const previewAvailable = hasPreview && (counts.queuedIntents === 0 || preview.length > 0);
   return { available: true, sourceAt: at, block: String(block), blockAt, revision: publication.queueRevision,
     ...counts, blockGasLimit, queuedGas, submittedGas, pendingGas, saturationPct: s.saturationPct,
-    capacityBlocks: Number(blocks), preview, personalRank: null,
+    capacityBlocks: Number(blocks), preview, previewAvailable, personalRank: null,
     reason: '全球执行队列；未查询个人地址与 intent 排名。Gas 容量折算不是成交时间。' };
 }
 

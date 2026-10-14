@@ -20,9 +20,10 @@ test('network failures are recorded per source, with null protocol metrics', asy
   assert.equal(s.executionQueue.available, false); assert.equal(s.sources.executionQueue.ok, false);
 });
 test('complete collection pins BBO reads and retries one transient RPC error', async () => {
-  const at = Date.now(), seenBlocks = []; let batches = 0;
+  const at = Date.now(), seenBlocks = [], requests = []; let batches = 0;
   const tuple = [0, 'BTC', 0, '10', true, false, false, false, false, null, null, null, units(15000), units(814), 1000, units(10000000), '500000000000000', units(0), units(100000), units(0), units(0), units(1000000), units(1000000)];
-  const s = await collect({ pressureReader: async () => ({ available: true, sourceAt: at, block: '123', queuedIntents: 0 }), fetcher: async (url, request) => {
+  const s = await collect({ auxiliary: false, deriveRisk: false, pressureReader: async () => ({ available: true, sourceAt: at, block: '123', queuedIntents: 0 }), fetcher: async (url, request) => {
+    requests.push([url, request.body]);
     const body = request.body ? JSON.parse(request.body) : null; let payload;
     if (url.endsWith('/query/protocol/summary')) payload = summary();
     else if (url.endsWith('/state/trading')) payload = { schemaVersion: 1, tradingPaused: false, indexedThroughBlock: 123, minimumTradeSizeRaw: units(10), minimumOpenNotionalRaw: units(1000), instruments: [tuple], intake: [at, units(1000), units(25000000), []] };
@@ -38,6 +39,9 @@ test('complete collection pins BBO reads and retries one transient RPC error', a
   assert.equal(s.markets[0].paperMid, 80000.5); assert.equal(s.sources.paperBbo.ok, true);
   assert.equal(s.rewardAccumulatorRaw, units(100)); assert.deepEqual(seenBlocks, ['0x7b', '0x7b']);
   assert.equal(s.executionQueue.available, true); assert.equal(s.sources.executionQueue.at, at);
+  assert.deepEqual(s.markets.map(m => m.coin), ['BTC', 'ETH']); assert.equal(s.lpRiskDeferred, true);
+  assert.equal(s.sources.jumps.disabled, true);
+  assert.ok(!requests.some(([url, body]) => /binance|protocol\/history/.test(url) || body?.includes('"coin":"HYPE"')));
 });
 test('protocol hourly history derives per-hour minted PAPER and flags the running hour', () => {
   const h = { startMs: 0, intervalMs: 3600000, source: { asOfMs: 3 * 3600000 + 1000, revision: '9' }, columns: {

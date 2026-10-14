@@ -1,6 +1,9 @@
-import { makePlan, emissionRate, executionQueueStatus, stakerIncomeWindow, breakEvenGrowth, pairHedgeCost, burnEstimate } from './model.mjs';
+import { makePlan, emissionRate, executionQueueStatus, dividendWindow48, breakEvenGrowth, breakEvenGrowthLabel, pairHedgeCost, burnEstimate, lpDrainRisk } from './model.mjs';
+import { FIELDS, TABLES, readProfitCache, writeProfitCache, validProfitCache } from './profit-cache.mjs';
 const $ = id => document.getElementById(id);
-let snapshot = null, stored = null, plan = null, history = [], recent = [], day = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
+let snapshot = null, stored = null, plan = null, history = [], day = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
+let profitHistoryState = 'loading', profitCache = null, dividendRows = [];
+try { profitCache = readProfitCache(localStorage); } catch {}
 const number = (value, digits = 2) => value === null || value === undefined || !Number.isFinite(value) ? '不可用' : value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
 const money = value => number(value) + (Number.isFinite(value) ? ' U' : '');
 const PAPER_DISPLAY_QUANTITY = 10000;
@@ -13,6 +16,27 @@ const set = (id, text) => { $(id).textContent = text; };
 const pnlClass = value => Number.isFinite(value) && value >= 0 ? 'pos' : 'neg';
 function config() { const c = {}; for (const k of ['margin', 'paperLeverage', 'hedgeLeverage', 'lossBudget', 'takerFeeBps', 'exitSlippageBps', 'holdingHours']) c[k] = Number($(k).value); c.paperLong = $('direction').value === 'long'; return c; }
 
+function showProfitCache() {
+  if (!validProfitCache(profitCache)) return false;
+  for (const id of FIELDS) set(id, profitCache.fields[id]);
+  for (const id of Object.keys(TABLES)) $(id).replaceChildren(...profitCache.tables[id].map(row => {
+    const tr = el('tr', undefined, row.className);
+    for (const cell of row.cells) { const td = el('td', cell.text); td.title = cell.title; td.colSpan = cell.span ?? 1; tr.append(td); }
+    return tr;
+  }));
+  set('profitFreshness', '历史缓存 · 源数据更新于 ' + time(profitCache.sampleAt) + ' · ' + (profitHistoryState === 'loading' ? '正在更新' : profitHistoryState === 'failed' ? '历史读取失败，保留上次有效结果' : '最新窗口暂不可用于回本测算，保留上次有效结果') + '；以下整块测算为旧值');
+  return true;
+}
+function rememberProfit(sampleAt) {
+  if (profitCache?.sampleAt === sampleAt && profitCache.fields.paperYieldNote === $('paperYieldNote').textContent && Date.now() - profitCache.savedAt < 60000) return;
+  const value = { version: 2, sampleAt, savedAt: Date.now(),
+    fields: Object.fromEntries(FIELDS.map(id => [id, $(id).textContent])),
+    tables: Object.fromEntries(Object.keys(TABLES).map(id => [id, [...$(id).rows].map(row => ({
+      className: row.classList.contains('inactive-path') ? 'inactive-path' : '', cells: [...row.cells].map(cell => ({ text: cell.textContent, title: cell.title, span: cell.colSpan }))
+    }))])) };
+  if (validProfitCache(value)) { profitCache = value; try { writeProfitCache(localStorage, value); } catch {} }
+}
+
 function render() {
   if (!snapshot) return;
   const s = snapshot, p = s.paper;
@@ -23,21 +47,17 @@ function render() {
   set('stakeNote', p && p.supply > 0 ? '占供应 ' + number(p.staked / p.supply * 100, 4) + '%' : '不可用');
   set('queue', s.queue ? compact(s.queue.total) + ' U' : '不可用'); set('queueNote', s.queue ? s.queue.count + ' 笔兑付等待；与下单队列分别采集' : '兑付状态未知');
   const q = s.executionQueue, execution = executionQueueStatus(s);
-  set('executionState', !networkHealthy || !execution.fresh ? '过期 / 不可用' : execution.busy ? '拥堵 · 手动方案已阻止' : '快照有效 · ' + age(q.sourceAt));
+  const aggregateFresh = networkHealthy && q?.available && Date.now() - q.sourceAt <= 15000;
+  set('executionState', aggregateFresh && q.previewAvailable === false ? '全局统计有效 · 顺序预览未提供' : !networkHealthy || !execution.fresh ? '过期 / 不可用' : execution.busy ? '拥堵 · 手动方案已阻止' : '快照有效 · ' + age(q.sourceAt));
   set('executionCount', q?.available ? number(q.queuedIntents, 0) + ' / ' + number(q.submittedIntents, 0) : '不可用');
   set('executionBlocks', q?.available ? number(q.capacityBlocks, 0) + ' 块' : '不可用');
   set('executionPressure', q?.available ? number(q.saturationPct, 1) + '%' : '不可用');
   set('executionOldest', execution.fresh ? number(execution.oldestPreviewSeconds, 1) + ' s' : '不可用');
   set('executionNote', execution.reason + '。个人排名未接入；请求从预览消失不证明已成交。');
   const actionNames = { openPosition: '开仓', closePositions: '平仓', paperStake: '质押', paperUnstake: '解除质押', paperClaim: '领取分红', paperDistribute: '分配', registerSessionKey: '会话授权', withdrawToCore: '提现' };
-  $('executionPreview').replaceChildren(...(q?.available && q.preview.length ? q.preview.map((p, idx) => { const tr = el('tr'); [idx + 1, actionNames[p.action] ?? p.action, '类别 ' + p.priorityClass, p.estimatedGas, age(p.acceptedAt)].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', q?.available ? '该快照队列为空' : '无有效快照，不能当作没有排队'); td.colSpan = 5; tr.append(td); return tr; })()]));
+  $('executionPreview').replaceChildren(...(q?.available && q.preview.length ? q.preview.map((p, idx) => { const tr = el('tr'); [idx + 1, actionNames[p.action] ?? p.action, '类别 ' + p.priorityClass, p.estimatedGas, age(p.acceptedAt)].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', q?.previewAvailable === false ? '官方未提供顺序预览；全局笔数仍可查看，等待年龄未知' : q?.available ? '该快照队列为空' : '无有效快照，不能当作没有排队'); td.colSpan = 5; tr.append(td); return tr; })()]));
   set('notice', !fresh ? '公开来源故障或超过 30 秒，方案已阻止。旧值仅供查看，不能视为当前行情。' : p?.staked === 0 ? '当前官方质押供应为 0；待分配奖励还不能用于证明个人回本。PAPER 可交易市场价尚未核实。' : 'PAPER 可交易市场价尚未核实。请以实际分配指数与领取流水判断收益；待分配奖励没有计为现金收入。');
-  $('markets').replaceChildren(...s.markets.map(m => {
-    const tr = el('tr'), diff = m.paperMid && m.bid && m.ask ? (m.paperMid / ((m.bid + m.ask) / 2) - 1) * 10000 : null;
-    const fields = [m.coin, Number.isFinite(m.bid) ? number(m.bid, m.coin === 'HYPE' ? 4 : 2) + ' / ' + number(m.ask, m.coin === 'HYPE' ? 4 : 2) : '不可用', m.coin === 'HYPE' ? 'Paper 暂无该市场' : number(m.paperMid), diff === null ? '—' : number(diff, 3) + ' bps', number(m.mark), Number.isFinite(m.funding) ? number(m.funding * 100, 6) + '%' : '不可用', 'HL ' + age(m.bookAt) + (m.paperAt ? ' / P ' + age(m.paperAt) : '')];
-    fields.forEach((v, i) => tr.append(el('td', v, i === 5 && Number.isFinite(m.funding) ? pnlClass(m.funding) : undefined))); return tr;
-  }));
-  $('sources').replaceChildren(...Object.entries(s.sources).map(([name, source]) => { const row = el('div', undefined, 'source'); row.append(el('span', name), el('span', source.ok ? age(source.at) : source.error, source.ok && Date.now() - source.at <= 30000 ? 'pos' : 'neg')); return row; }));
+  $('sources').replaceChildren(...Object.entries(s.sources).map(([name, source]) => { const row = el('div', undefined, 'source'); row.append(el('span', name), el('span', source.disabled ? source.reason : source.ok ? age(source.at) + (source.retained ? ' · 上次辅助采集' : '') : source.error, source.disabled ? 'subtle' : source.ok && Date.now() - source.at <= (source.retained ? 10 * 60000 : 30000) ? 'pos' : 'neg')); return row; }));
   set('distribution', s.latestDistribution ? time(s.latestDistribution.at) : s.sources.paperActivity?.ok ? '尚无分配记录' : '不可用');
   set('distributionNote', s.latestDistribution ? '该次协议分配 ' + money(s.latestDistribution.amount) : '查询官方最新分配事件');
   renderPlan(); renderHistory(); renderPath(); renderRisk();
@@ -50,7 +70,7 @@ function renderRisk() {
   const ops = (g?.operations ?? []).filter(o => Number.isFinite(o.readyAt)), applied = o => o.resolvedBlock || (o.selector === '12baae3b' && Number(o.args?.[1]) > 0 && s.paper?.cap >= Number(o.args[1])), pending = ops.filter(o => !applied(o));
   set('govCount', g ? String(pending.length) : '不可用');
   const next = pending.map(o => o.readyAt).sort((a, b) => a - b)[0];
-  set('govNote', !g ? '治理扫描未接入（等待云端定时记录）' : (g.stale ? '扫描失败，沿用上一条记录 · ' : '') + (next ? '最早 ' + time(next) + ' 可执行（' + number((next - now) / 86400000, 1) + ' 天）' : '没有待执行的排程') + ' · 已扫到区块 ' + (g.lastScannedBlock ?? '—'));
+  set('govNote', !g ? '治理扫描未接入（等待云端定时记录）' : (g.stale || now - g.at > 10 * 60000 ? '扫描失败或过期，沿用已知操作 · ' : '') + (next ? '最早 ' + time(next) + ' 可执行（' + number((next - now) / 86400000, 1) + ' 天）' : '已知记录没有待执行排程') + ' · 已检查到区块 ' + (g.lastScannedBlock ?? '—') + (g.gaps?.length ? ' · ' + g.gaps.length + ' 段历史缺口待补扫，不能认定事件齐全' : ''));
   $('govTable').replaceChildren(...(ops.length ? ops.map(o => { const tr = el('tr'); [o.description ?? `${o.label}${o.args ? '：' + o.args.join(', ') : ''}`, o.where ?? o.target, time(o.readyAt), applied(o) ? (o.resolvedBlock ? '已执行或已取消（区块 ' + o.resolvedBlock + '）' : '已生效（链上参数已等于新值）') : o.readyAt <= now ? '可执行，等待多签执行' : '排程中，' + number((o.readyAt - now) / 86400000, 1) + ' 天后可执行'].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', g ? '没有排程操作' : '治理数据不可用，不能当作没有排程'); td.colSpan = 4; tr.append(td); return tr; })()]));
   const alerts = [...(s.listing?.alerts ?? [])], web = stored?.web;
   if (web?.changedAt && now - web.changedAt < 7 * 86400000) alerts.push({ level: 'info', detail: `官方文档或前端版本在 ${time(web.changedAt)} 更新，人工核对是否有上新或规则变化` });
@@ -66,8 +86,6 @@ function renderRisk() {
   const ev = s.events?.events ?? [], first = ev[0];
   set('nextEvent', first ? (first.inWindow ? '进行中 · ' : '') + first.name : s.events?.calendarExhausted ? '日历需续表' : '不可用');
   set('nextEventNote', first ? time(first.at) + '（' + number((first.at - now) / 3600000, 1) + ' 小时后）' + (ev[1] ? ' · 之后 ' + ev[1].name + ' ' + time(ev[1].at) : '') : 'FOMC、CPI、非农；前后 30 分钟为高波动窗口');
-  const j = s.jumps, count = key => day.filter(x => Number.isFinite(x[key]) && x[key] > 0.001).length;
-  $('jumpTable').replaceChildren(...['BTC', 'ETH'].map(c => { const tr = el('tr'), v = j?.[c]; [c, v ? number(v.max1s * 100, 3) + '%' : '不可用', v ? number(v.max10s * 100, 3) + '%' : '不可用', day.length ? String(count(c === 'BTC' ? 'jump_btc_1s' : 'jump_eth_1s')) + ' / ' + day.length : '样本不足'].forEach((x, i) => tr.append(el('td', x, i === 1 && v && v.max1s > 0.001 ? 'neg' : undefined))); return tr; }));
   const level = alerts.some(a => a.level === 'critical') ? '严重：出现可能跳空的新市场' : first?.inWindow ? '宏观事件窗口：跳空与 LP 打穿风险上升' : r && !r.flatRateActive && r.up.toCliff !== null && r.up.toCliff < 0.01 ? 'LP 缓冲薄：涨 ' + pct(r.up.toCliff) + ' 即跌破 200 万' : alerts.length ? '有变更需核对' : '平稳';
   set('riskState', level);
 }
@@ -75,29 +93,44 @@ function renderRisk() {
 function renderPath() {
   if (!snapshot) return;
   const s = snapshot, rate = emissionRate(s.paper), btc = s.trading?.instruments?.find(i => i.symbol === 'BTC');
-  const w60 = stakerIncomeWindow(recent, 60), w30 = stakerIncomeWindow(recent, 30), k = w60?.incomePerNewPaper ?? null;
-  set('incomePerNew', k === null ? '样本不足' : paperUnitMoney(k));
-  set('incomePerNewNote', w30?.incomePerNewPaper != null ? '30 分钟每 1 万枚 ' + paperUnitMoney(w30.incomePerNewPaper) + ' · （分配 + 待分配变化）÷ 新铸 PAPER × 10,000' : '（分配 + 待分配变化）÷ 新铸 PAPER × 10,000；需要至少 48 分钟连续样本');
+  const hourlySource = s.sources.protocolHistory, hourlyFresh = hourlySource?.ok && Date.now() - hourlySource.at <= 10 * 60000;
+  const minuteAt = dividendRows.at(-1)?.collected_at, indexFresh = profitHistoryState === 'ready' && Number.isFinite(minuteAt) && Date.now() - minuteAt <= 180000;
+  const window = dividendWindow48(indexFresh ? dividendRows : [], hourlyFresh ? s.protocolHours ?? [] : []);
+  const sampleAt = Math.max(indexFresh ? minuteAt : 0, hourlyFresh ? hourlySource.at : 0), k = window.incomePerNewPaper;
+  if (!window.available && showProfitCache()) return;
+  const missing = profitHistoryState === 'loading' ? '正在读取历史…' : profitHistoryState === 'failed' ? '历史读取失败' : '样本不足';
+  set('profitFreshness', '完整小时窗口：' + time(window.startAt) + ' — ' + time(window.endAt) + ' · 有效 ' + window.validHours + '/48 小时 · 加权覆盖 ' + number(window.coverage * 100, 1) + '%' + (sampleAt ? ' · 数据更新 ' + time(sampleAt) : ' · 等待数据'));
+  set('incomePerNew', k === null ? missing : paperUnitMoney(k));
+  set('incomePerNewNote', '48 小时加权官方已分配收入 ÷ 加权新铸 PAPER；不含待分配奖励');
   set('stakerShare', k !== null && rate !== null ? number(k * rate * 100, 1) + '%' : '不可用');
-  set('paperYield', w60 ? paperUnitMoney(w60.yieldPerPaperHour) : '样本不足');
-  set('paperYieldNote', w30 ? '30 分钟折算每 1 万枚 ' + paperUnitMoney(w30.yieldPerPaperHour) + '/小时；随供应增长下降' : '分红指数增长；随供应增长下降');
-  set('supplyGrowth', w60?.supplyGrowth ? '×' + number(w60.supplyGrowth, 2) : '样本不足');
+  set('paperYield', window.available ? paperUnitMoney(window.weightedPerPaperHour) + ' / 小时' : missing);
+  set('paperYieldNote', (window.estimatedHours ? '估算（含小时统计补算）' : '实测分红指数') + ' · 实测 ' + window.measuredHours + ' / 估算 ' + window.estimatedHours + ' 小时 · 有效小时普通均值 ' + paperUnitMoney(window.meanPerPaperHour) + '/小时；不代表未来收益');
+  const cost = btc && rate !== null ? pairHedgeCost(btc, rate, .01) : null;
+  const costFresh = networkHealthy && ['summary', 'trading'].every(key => s.sources[key]?.ok && Date.now() - s.sources[key].at <= 30000);
+  set('currentCost', costFresh ? paperUnitMoney(cost?.costPerPaper) : '参数过期 / 不可用');
+  set('currentCostNote', '当前估算净损耗 · Paper 多空等量对冲，波动 1% 一起平 · 参数 ' + time(s.sources.trading?.at) + '；不含 GAS，非保证金或市场价');
+  set('supplyGrowth', window.supplyGrowth !== null ? '×' + number(window.supplyGrowth, 2) : '不可用');
   const paths = [];
   if (btc && rate !== null) {
     for (const move of [0.01, 0.005]) { const h = pairHedgeCost(btc, rate, move); paths.push(['Paper 多空对冲 · 波动 ' + move * 100 + '% 一起平', h.costPerPaper, `每轮成本 ${number(h.cost, 2)} U / 铸 ${compact(h.mintedPaper)}；无 HL 费用与资金费`]); }
-    paths.push(['单纯方向亏损', 1 / (0.98 * rate), '亏 1 U 只换铸币，不回收盈利']);
   }
   if (plan?.scenarios) {
     const prob = Number($('lossProbability').value) / 100, [loss, win] = plan.scenarios;
     if (prob > 0 && prob <= 1 && loss.mintedPaper > 0) paths.push([`HL 对冲 · 当前计算器 ${plan.config.paperLeverage}x`, Math.max(0, -(prob * loss.pnl + (1 - prob) * win.pnl)) / (prob * loss.mintedPaper), `按输入 ${number(prob * 100, 0)}% 亏损概率；另有两腿排队敞口`]);
   }
-  $('pathTable').replaceChildren(...(paths.length ? paths.map(([name, cost, note]) => { const g = breakEvenGrowth(cost, k), tr = el('tr'); [name, paperUnitMoney(cost), g === null ? '不可用' : '×' + number(g, 2), note].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 4; tr.append(td); return tr; })()]));
-  const best = btc && rate !== null ? breakEvenGrowth(pairHedgeCost(btc, rate, 0.01).costPerPaper, k) : null;
-  set('pathState', best === null ? '样本不足 · 不判断' : best < 1.5 ? '最低成本路径需供应再增 ×' + number(best, 2) + ' · 可观察' : best < Math.E ? '需供应再增 ×' + number(best, 2) + ' · 警戒' : '需供应再增 ×' + number(best, 2) + ' · 已接近刷币者互相补贴，暂停新增');
-  const burns = btc && rate !== null ? [['1000x · 亏损边爆仓', 1000, null], ['500x · 亏损边爆仓', 500, null], ['100x · 0.5% 平仓', 100, 0.005], ['50x · 1% 平仓', 50, 0.01], ['20x · 2% 平仓', 20, 0.02]].map(([name, lev, move]) => [name, burnEstimate({ instrument: btc, mintRate: rate, notional: s.trading.minimumOpenNotional, leverage: lev, move })]) : [];
+  if (!paths.some(([name]) => name.startsWith('HL 对冲'))) paths.push(['HL 对冲 · 当前计算器', null, '保留测算；当前参数或来源不足']);
+  $('pathCompare').replaceChildren(...paths.map(([name, cost, note]) => { const tr = el('tr', undefined, name.startsWith('HL 对冲') ? 'inactive-path' : undefined); [name, costFresh ? paperUnitMoney(cost) : '参数过期 / 不可用', note].forEach(x => tr.append(el('td', x))); return tr; }));
+  $('pathTable').replaceChildren(...paths.map(([name, cost, note]) => {
+    const g = breakEvenGrowth(cost, k), tr = el('tr', undefined, name.startsWith('HL 对冲') ? 'inactive-path' : undefined);
+    [name, paperUnitMoney(cost), g === null && profitHistoryState !== 'ready' ? missing : breakEvenGrowthLabel(g), note].forEach((x, i) => { const td = el('td', x); if (i === 2 && g !== null) td.title = '模型原始倍数：' + String(g) + '；假设收入比率不变，非收益预测'; tr.append(td); }); return tr;
+  }));
+  set('pathState', window.available ? '48 小时加权 · 12 小时半衰期 · ' + (window.estimatedHours ? '估算' : '实测') : missing + ' · 不外推');
+  set('burnHeading', '1000 U · 50% 胜率 · 最小名义 ' + number(s.trading?.minimumOpenNotional, 0) + ' U');
+  const burns = btc && rate !== null ? [['1000x · 亏损边爆仓', 1000, null], ['500x · 亏损边爆仓', 500, null], ['100x · 0.5% 平仓', 100, 0.005], ['50x · 1% 平仓', 50, 0.01], ['20x · 2% 平仓', 20, 0.02]].map(([name, lev, move]) => [name, burnEstimate({ instrument: btc, mintRate: rate, notional: Math.max(s.trading.minimumOpenNotional, s.trading.minimumMargin * lev), leverage: lev, move })]) : [];
   $('burnTable').replaceChildren(...(burns.length ? burns.map(([name, b]) => { const tr = el('tr'); (b ? [name, money(b.margin), number(b.distance * 100, 3) + '%', money(b.expectedLossPerTrade), paperUnitMoney(b.costPerPaper), compact(b.expectedPaper), number(b.expectedTrades, 0)] : [name, '不可用', '', '', '', '', '']).forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 7; tr.append(td); return tr; })()]));
   const hours = s.protocolHours;
   $('protocolHours').replaceChildren(...(hours?.length ? [...hours].reverse().map(h => { const tr = el('tr'); [time(h.startMs).slice(0, -3) + (h.partial ? '（进行中）' : ''), compact(h.revenue) + ' U', compact(h.minted), h.revenuePerNewPaper === null ? '—' : paperUnitMoney(h.revenuePerNewPaper), h.revenuePerPaperHour === null ? '—' : paperUnitMoney(h.revenuePerPaperHour), compact(h.traderPnl) + ' U', compact(h.liquidationNotional) + ' U'].forEach((x, i) => tr.append(el('td', x, i === 5 ? pnlClass(h.traderPnl) : undefined))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', s.sources.protocolHistory?.ok ? '尚无交易小时' : '官方小时统计不可用'); td.colSpan = 7; tr.append(td); return tr; })()]));
+  if (window.available && costFresh) rememberProfit(sampleAt);
 }
 
 function renderPlan() {
@@ -155,19 +188,25 @@ function renderHistory() {
 
 async function refresh() {
   if (refreshing) return; refreshing = true;
-  try { const response = await fetch('/api/live', { cache: 'no-store', signal: AbortSignal.timeout(25000) }); if (!response.ok) throw new Error('API unavailable'); snapshot = await response.json(); networkHealthy = true; render(); }
+  try { const response = await fetch('/api/live', { cache: 'no-store', signal: AbortSignal.timeout(25000) }); if (!response.ok) throw new Error('API unavailable'); snapshot = await response.json(); if (snapshot.lpRiskDeferred) snapshot.lpRisk = lpDrainRisk(snapshot); networkHealthy = true; render(); }
   catch { networkHealthy = false; $('connection').className = 'status bad'; set('connection', '连接失败'); set('notice', '连接失败。旧值仅供查看，方案已经阻止；恢复后重新计算。'); renderPlan(); }
   finally { refreshing = false; }
 }
 async function refreshHistory() {
   if (historyRefreshing) return; historyRefreshing = true;
   try {
-    const r = await fetch('/api/history?hours=' + Number($('historyHours').value), { signal: AbortSignal.timeout(15000) }); const data = await r.json(); if (!r.ok) throw new Error(data.error); history = data.rows;
-    const rr = await fetch('/api/history?hours=2', { signal: AbortSignal.timeout(15000) }); const minute = await rr.json(); recent = rr.ok ? minute.rows : [];
-    day = Number($('historyHours').value) === 24 ? history : day;
-    if (Number($('historyHours').value) !== 24) { const rd = await fetch('/api/history?hours=24', { signal: AbortSignal.timeout(15000) }); const d = await rd.json(); day = rd.ok ? d.rows : []; }
-    const rl = await fetch('/api/latest', { signal: AbortSignal.timeout(15000) }); const latest = await rl.json(); stored = rl.ok ? latest.snapshot : null;
+    const read = async path => { const r = await fetch(path, { signal: AbortSignal.timeout(15000) }); const data = await r.json(); if (!r.ok) throw new Error(data.error ?? '历史请求失败'); return data; };
+    const rows = async hours => { const data = await read('/api/history?hours=' + hours); if (!Array.isArray(data.rows)) throw new Error('历史格式异常'); return data.rows; };
+    const selectedHours = Number($('historyHours').value);
+    const minute = read('/api/dividend-history').then(value => { if (!Array.isArray(value.rows)) throw new Error('分红历史格式异常'); dividendRows = value.rows; profitHistoryState = 'ready'; renderPath(); return value.rows; }).catch(error => { profitHistoryState = 'failed'; renderPath(); throw error; });
+    const selected = rows(selectedHours);
+    const daily = selectedHours === 24 ? selected : rows(24);
+    const results = await Promise.allSettled([selected, minute, daily, read('/api/latest')]);
+    if (results[0].status === 'fulfilled') history = results[0].value;
+    if (results[2].status === 'fulfilled') day = results[2].value;
+    if (results[3].status === 'fulfilled') stored = results[3].value.snapshot;
     renderHistory(); renderPlan(); renderPath(); renderRisk();
+    const failure = results.find(r => r.status === 'rejected'); if (failure) set('historyState', '部分历史读取失败：' + failure.reason.message);
   }
   catch (error) { set('historyState', error.message); }
   finally { historyRefreshing = false; }
@@ -182,6 +221,7 @@ $('copyPlan').addEventListener('click', async () => {
   const p = plan, text = [`${p.coin} 对冲方案（仅测算；确认实际成交后再匹配数量）`, `采集时间：${time(snapshot.collectedAt)}`, `Paper ${p.config.paperLong ? '多' : '空'}：${p.quantity} ${p.coin}，保证金 ${p.paperMargin.toFixed(4)} U，${p.config.paperLeverage}x，参考价 ${p.prices.paperEntry}`, `HL ${p.hedgeLong ? '多' : '空'}：${p.quantity} ${p.coin}，${p.config.hedgeLeverage}x，订单簿 VWAP ${p.hedgeEntry.toFixed(4)}，最低保证金估计 ${p.marginMinimum.toFixed(2)} U + 浮亏缓冲`, `先确认 Paper 提交/成交状态与真实入场价；HL 使用价格限制并匹配已成交数量；任何一腿失败即停止加仓，处理已有敞口。`, `止损/止盈参考价：${p.scenarios.map(b => b.exitMid.toFixed(4)).join(' / ')}；HL 平仓使用 reduce-only，数量以真实仓位为准。`, `Paper 亏损分支组合盈亏 ${p.scenarios[0].pnl.toFixed(4)} U / 铸币 ${p.scenarios[0].mintedPaper.toFixed(4)} PAPER`, `Paper 盈利分支组合盈亏 ${p.scenarios[1].pnl.toFixed(4)} U / 不铸币`, ...p.warnings].join('\n');
   try { await navigator.clipboard.writeText(text); set('copyResult', '方案已复制；不会提交订单。'); } catch { set('copyResult', '浏览器禁止剪贴板，请根据上方参数手动操作。'); }
 });
+showProfitCache();
 await Promise.all([refresh(), refreshHistory()]);
 setInterval(refresh, 10000); setInterval(refreshHistory, 60000);
 setInterval(() => { if (snapshot) render(); }, 5000);

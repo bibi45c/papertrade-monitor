@@ -6,8 +6,11 @@ function wrangler(args) {
   if (command.status !== 0) process.exit(command.status ?? 1);
 }
 const config = JSON.parse(readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8'));
-if (!config.d1_databases?.some(d => d.binding === 'DB' && d.database_id)) {
-  wrangler(['d1', 'create', 'papertrade-monitor', '--binding', 'DB', '--update-config', '--location', 'apac']);
+const database = config.d1_databases?.find(d => d.binding === 'DB');
+const databaseName = database?.database_name;
+if (!databaseName) throw new Error('Set d1_databases.database_name with binding DB in wrangler.jsonc first');
+if (!database.database_id) {
+  wrangler(['d1', 'create', databaseName, '--binding', 'DB', '--update-config', '--location', 'apac']);
 }
-wrangler(['d1', 'migrations', 'apply', 'papertrade-monitor', '--remote']);
-console.log('D1 binding and initial migration are ready. Run npm run deploy to publish.');
+wrangler(['d1', 'migrations', 'apply', databaseName, '--remote']);
+console.log('D1 binding and pending migrations are ready. Run npm run deploy to publish.');

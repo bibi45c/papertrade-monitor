@@ -69,25 +69,56 @@ export function decodeLog(log) {
   return { kind, address: log.address.toLowerCase(), topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), tx: log.transactionHash, call };
 }
 
-// 增量扫描 timelock 与多签日志；公共 RPC 单次最多 1000 块，每次运行最多 3 段，缺口如实记录。
+export function mergeBlockRanges(ranges) {
+  const sorted = (ranges ?? []).filter(r => Array.isArray(r) && r.length === 2 && r.every(Number.isSafeInteger) && r[0] >= 0 && r[1] >= r[0]).map(r => [...r]).sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const range of sorted) {
+    const last = merged.at(-1);
+    if (last && range[0] <= last[1] + 1) last[1] = Math.max(last[1], range[1]);
+    else merged.push(range);
+  }
+  return merged;
+}
+
+function subtractRange(ranges, from, through) {
+  return ranges.flatMap(([a, b]) => b < from || a > through ? [[a, b]] : [...(a < from ? [[a, from - 1]] : []), ...(b > through ? [[through + 1, b]] : [])]);
+}
+
+// One recent chunk, then oldest pending chunks. Successful ranges alone are removed.
 export async function scanGovernance({ fetcher = fetch, previous = null, maxChunks = 3 } = {}) {
+  if (!Number.isSafeInteger(maxChunks) || maxChunks < 1 || maxChunks > 10) throw new RangeError('Invalid governance chunk budget');
   const rpc = (method, params) => readJson('https://rpc.hyperliquid.xyz/evm', { jsonrpc: '2.0', id: 1, method, params }, fetcher, { validate: v => { checkRpcError(v); if (!('result' in v)) throw new ReadError('Missing RPC result', true); return v.result; } });
   const head = Number(BigInt(await rpc('eth_blockNumber', [])));
-  const last = Number.isSafeInteger(previous?.lastScannedBlock) ? previous.lastScannedBlock : head - 300;
-  let from = Math.max(last + 1, head - maxChunks * 1000 + 1), gap = from > last + 1 ? [last + 1, from - 1] : null;
-  const logs = [];
-  for (let start = from; start <= head; start += 1000) {
-    const end = Math.min(head, start + 999);
-    logs.push(...await rpc('eth_getLogs', [{ address: [GOVERNANCE.timelock, GOVERNANCE.multisig], fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]));
+  const last = Number.isSafeInteger(previous?.lastScannedBlock) ? previous.lastScannedBlock : Math.max(0, head - 300);
+  if (head < last) throw new Error('Governance head moved behind cursor');
+  const from = Math.max(last + 1, head - 999, 0), logs = [], readErrors = [];
+  let gaps = mergeBlockRanges([...(previous?.gaps ?? []), ...(from > last + 1 ? [[last + 1, from - 1]] : [])]);
+  const read = async (start, end) => {
+    try {
+      const result = await rpc('eth_getLogs', [{ address: [GOVERNANCE.timelock, GOVERNANCE.multisig], fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
+      if (!Array.isArray(result)) throw new Error('Invalid governance log response');
+      // Decode before marking a range covered: malformed logs must remain recoverable.
+      result.forEach(decodeLog);
+      logs.push(...result); gaps = subtractRange(gaps, start, end); return true;
+    } catch (error) {
+      gaps = mergeBlockRanges([...gaps, [start, end]]);
+      readErrors.push({ from: start, through: end, error: String(error.message ?? error).slice(0, 180) }); return false;
+    }
+  };
+  let used = 0;
+  if (from <= head) { await read(from, head); used++; }
+  while (used < maxChunks && gaps.length) {
+    const [start, lastBlock] = gaps[0], end = Math.min(lastBlock, start + 999);
+    used++;
+    if (!await read(start, end)) break;
   }
   const events = logs.map(decodeLog);
   const ops = new Map((previous?.operations ?? KNOWN_OPERATIONS).map(o => [o.id, o]));
   for (const e of events) if (e.kind === 'scheduled') ops.set(e.id, { ...ops.get(e.id), ...e });
   // timelock 的执行/取消事件未识别具体签名：同一操作 ID 再次出现即标记为已执行或已取消。
   for (const e of events) if (e.kind === 'unknown' && e.address === GOVERNANCE.timelock && ops.has(e.topic1)) ops.set(e.topic1, { ...ops.get(e.topic1), resolvedBlock: e.block, resolvedTopic: e.topic0 });
-  const recent = [...events.filter(e => e.kind !== 'scheduled'), ...(previous?.recentEvents ?? [])].slice(0, 20);
-  const gaps = [...(gap ? [gap] : []), ...(previous?.gaps ?? [])].slice(0, 10);
-  return { at: Date.now(), block: '0x' + head.toString(16), lastScannedBlock: head, scannedFrom: from, operations: [...ops.values()], recentEvents: recent, gaps };
+  const recent = [...new Map([...events.filter(e => e.kind !== 'scheduled'), ...(previous?.recentEvents ?? [])].map(e => [e.tx + ':' + e.topic0 + ':' + e.topic1, e])).values()].sort((a, b) => b.block - a.block).slice(0, 20);
+  return { at: Date.now(), block: '0x' + head.toString(16), lastScannedBlock: head, scannedFrom: from, operations: [...ops.values()], recentEvents: recent, gaps, readErrors, coverageComplete: gaps.length === 0 && readErrors.length === 0 };
 }
 
 // 上新、退市与参数变化：和上线时的 BTC/ETH 基线比较；任何新品种都按跳空风险分级。
@@ -137,17 +168,6 @@ export function jumpStats(closes) {
   for (let i = 1; i < closes.length; i++) max1s = Math.max(max1s, Math.abs(closes[i] / closes[i - 1] - 1));
   for (let i = 10; i < closes.length; i++) max10s = Math.max(max10s, Math.abs(closes[i] / closes[i - 10] - 1));
   return { max1s, max10s, samples: closes.length };
-}
-
-export async function readJumps({ fetcher = fetch, now = Date.now() } = {}) {
-  const from = Math.floor(now / 60000) * 60000 - 60000, out = { at: Date.now(), windowStart: from, source: 'Binance 现货 1 秒 K 线（代理）' };
-  for (const [coin, symbol] of [['BTC', 'BTCUSDT'], ['ETH', 'ETHUSDT']]) {
-    const rows = await readJson(`https://data-api.binance.vision/api/v3/klines?symbol=${symbol}&interval=1s&startTime=${from}&limit=61`, undefined, fetcher, { validate: v => { if (!Array.isArray(v)) throw new Error('Unknown kline schema'); return v; } });
-    const stats = jumpStats(rows.filter(r => r[0] >= from - 1000 && r[0] < from + 60000).map(r => Number(r[4])));
-    if (!stats) throw new Error(`${coin} 1 秒数据不足`);
-    out[coin] = stats;
-  }
-  return out;
 }
 
 // 文档与官方前端版本：资源文件名变化即页面有更新，提示人工核对上新或规则变化。

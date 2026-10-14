@@ -2,9 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
-import { saveSnapshot, getHistory, exportDay, purgeExpired } from '../src/storage.mjs';
+import { saveSnapshot, getHistory, getDividendHistory, exportDay, purgeExpired } from '../src/storage.mjs';
 function database() { const native = new DatabaseSync(':memory:'); native.exec(readFileSync(new URL('../migrations/0001_snapshots.sql', import.meta.url), 'utf8')); return { prepare(sql) { let args = []; return { bind(...values) { args = values; return this; }, async run() { return native.prepare(sql).run(...args); }, async all() { return { results: native.prepare(sql).all(...args) }; } }; } }; }
 const snapshot = at => ({ collectedAt: at, paperSourceAt: at, paper: { supply: 100, staked: 10, pendingRewards: 20 }, rewardAccumulatorRaw: '1000000000000000000000000001', balances: { lp: 100 }, queue: { total: 0, count: 0 }, markets: [] });
+test('compact dividend history retains hourly boundaries and the latest exact index', async()=>{
+  const db=database(), end=1000*3600000, now=end+59*60000;
+  for(const offset of [-3,-2,-1,0,1,2,3,58,59]) await saveSnapshot(db,snapshot(end+offset*60000));
+  const result=await getDividendHistory(db,now);
+  assert.deepEqual(result.rows.map(r=>(r.collected_at-end)/60000),[-2,-1,0,1,2,59]);
+  assert.equal(result.rows[0].reward_accumulator,'1000000000000000000000000001');
+  assert.deepEqual(Object.keys(result.rows[0]),['collected_at','reward_accumulator']);
+});
 test('minute snapshots deduplicate and retain exact reward accumulator strings', async () => {
   const db = database(), now = Date.parse('2026-10-10T14:00:00Z');
   await saveSnapshot(db, snapshot(now)); await saveSnapshot(db, snapshot(now + 1000));
