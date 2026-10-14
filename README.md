@@ -2,6 +2,8 @@
 
 只读网站、终端采集器与对冲成本计算器。预算默认 Paper 1000 USDC，HL 对冲保证金另计。不会连接钱包、签名或者提交订单。
 
+页面默认英文，右上角可切换中文 / English；选择保存在浏览器本地，切换会刷新页面。`?lang=en` 或 `?lang=zh` 可直接选择语言，也能在本地存储被禁用时切换。两种语言使用相同数据和计算，展示缓存按语言独立保存；时间统一使用新加坡时区，CSV 原始字段不随页面语言变化。
+
 线上地址：[papertrade-monitor.papertrade-monitor.workers.dev](https://papertrade-monitor.papertrade-monitor.workers.dev/)。[页面代码](https://github.com/bibi45c/papertrade-monitor)与 [1 分钟历史数据归档](https://github.com/bibi45c/papertrade-monitor-data)均为公开仓库。部分时间段数据不完整，请结合归档清单中的缺口与来源状态判断。
 
 ## 数据存放

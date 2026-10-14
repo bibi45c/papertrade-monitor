@@ -1,5 +1,7 @@
 import { makePlan, emissionRate, executionQueueStatus, dividendWindow48, breakEvenGrowth, breakEvenGrowthLabel, pairHedgeCost, burnEstimate, lpDrainRisk } from './model.mjs';
 import { FIELDS, TABLES, readProfitCache, writeProfitCache, validProfitCache } from './profit-cache.mjs';
+import { language, initializeLanguage, translateMessage as t } from './i18n.mjs';
+initializeLanguage();
 const $ = id => document.getElementById(id);
 let snapshot = null, stored = null, plan = null, history = [], day = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
 let profitHistoryState = 'loading', profitCache = null, dividendRows = [];
@@ -9,10 +11,10 @@ const money = value => number(value) + (Number.isFinite(value) ? ' U' : '');
 const PAPER_DISPLAY_QUANTITY = 10000;
 const paperUnitMoney = value => money(Number.isFinite(value) ? value * PAPER_DISPLAY_QUANTITY : null);
 const compact = value => Number.isFinite(value) ? new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 2 }).format(value) : '不可用';
-const time = value => Number.isFinite(value) ? new Date(value).toLocaleString('zh-CN', { timeZone: 'Asia/Singapore', hour12: false }) : '不可用';
+const time = value => Number.isFinite(value) ? new Date(value).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-GB', { timeZone: 'Asia/Singapore', hour12: false }) : '不可用';
 const age = value => Number.isFinite(value) ? Math.max(0, Math.round((Date.now() - value) / 1000)) + ' s' : '不可用';
-const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = text; if (className) node.className = className; return node; };
-const set = (id, text) => { $(id).textContent = text; };
+const el = (tag, text, className) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = t(text); if (className) node.className = className; return node; };
+const set = (id, text) => { $(id).textContent = t(text); };
 const pnlClass = value => Number.isFinite(value) && value >= 0 ? 'pos' : 'neg';
 function config() { const c = {}; for (const k of ['margin', 'paperLeverage', 'hedgeLeverage', 'lossBudget', 'takerFeeBps', 'exitSlippageBps', 'holdingHours']) c[k] = Number($(k).value); c.paperLong = $('direction').value === 'long'; return c; }
 
@@ -21,7 +23,7 @@ function showProfitCache() {
   for (const id of FIELDS) set(id, profitCache.fields[id]);
   for (const id of Object.keys(TABLES)) $(id).replaceChildren(...profitCache.tables[id].map(row => {
     const tr = el('tr', undefined, row.className);
-    for (const cell of row.cells) { const td = el('td', cell.text); td.title = cell.title; td.colSpan = cell.span ?? 1; tr.append(td); }
+    for (const cell of row.cells) { const td = el('td', cell.text); td.title = t(cell.title); td.colSpan = cell.span ?? 1; tr.append(td); }
     return tr;
   }));
   set('profitFreshness', '历史缓存 · 源数据更新于 ' + time(profitCache.sampleAt) + ' · ' + (profitHistoryState === 'loading' ? '正在更新' : profitHistoryState === 'failed' ? '历史读取失败，保留上次有效结果' : '最新窗口暂不可用于回本测算，保留上次有效结果') + '；以下整块测算为旧值');
@@ -122,7 +124,7 @@ function renderPath() {
   $('pathCompare').replaceChildren(...paths.map(([name, cost, note]) => { const tr = el('tr', undefined, name.startsWith('HL 对冲') ? 'inactive-path' : undefined); [name, costFresh ? paperUnitMoney(cost) : '参数过期 / 不可用', note].forEach(x => tr.append(el('td', x))); return tr; }));
   $('pathTable').replaceChildren(...paths.map(([name, cost, note]) => {
     const g = breakEvenGrowth(cost, k), tr = el('tr', undefined, name.startsWith('HL 对冲') ? 'inactive-path' : undefined);
-    [name, paperUnitMoney(cost), g === null && profitHistoryState !== 'ready' ? missing : breakEvenGrowthLabel(g), note].forEach((x, i) => { const td = el('td', x); if (i === 2 && g !== null) td.title = '模型原始倍数：' + String(g) + '；假设收入比率不变，非收益预测'; tr.append(td); }); return tr;
+    [name, paperUnitMoney(cost), g === null && profitHistoryState !== 'ready' ? missing : breakEvenGrowthLabel(g), note].forEach((x, i) => { const td = el('td', x); if (i === 2 && g !== null) td.title = t('模型原始倍数：' + String(g) + '；假设收入比率不变，非收益预测'); tr.append(td); }); return tr;
   }));
   set('pathState', window.available ? '48 小时加权 · 12 小时半衰期 · ' + (window.estimatedHours ? '估算' : '实测') : missing + ' · 不外推');
   set('burnHeading', '1000 U · 50% 胜率 · 最小名义 ' + number(s.trading?.minimumOpenNotional, 0) + ' U');
@@ -219,7 +221,7 @@ $('exportDay').addEventListener('change', updateExport); updateExport();
 $('copyPlan').addEventListener('click', async () => {
   renderPlan(); if (!plan?.ready) return;
   const p = plan, text = [`${p.coin} 对冲方案（仅测算；确认实际成交后再匹配数量）`, `采集时间：${time(snapshot.collectedAt)}`, `Paper ${p.config.paperLong ? '多' : '空'}：${p.quantity} ${p.coin}，保证金 ${p.paperMargin.toFixed(4)} U，${p.config.paperLeverage}x，参考价 ${p.prices.paperEntry}`, `HL ${p.hedgeLong ? '多' : '空'}：${p.quantity} ${p.coin}，${p.config.hedgeLeverage}x，订单簿 VWAP ${p.hedgeEntry.toFixed(4)}，最低保证金估计 ${p.marginMinimum.toFixed(2)} U + 浮亏缓冲`, `先确认 Paper 提交/成交状态与真实入场价；HL 使用价格限制并匹配已成交数量；任何一腿失败即停止加仓，处理已有敞口。`, `止损/止盈参考价：${p.scenarios.map(b => b.exitMid.toFixed(4)).join(' / ')}；HL 平仓使用 reduce-only，数量以真实仓位为准。`, `Paper 亏损分支组合盈亏 ${p.scenarios[0].pnl.toFixed(4)} U / 铸币 ${p.scenarios[0].mintedPaper.toFixed(4)} PAPER`, `Paper 盈利分支组合盈亏 ${p.scenarios[1].pnl.toFixed(4)} U / 不铸币`, ...p.warnings].join('\n');
-  try { await navigator.clipboard.writeText(text); set('copyResult', '方案已复制；不会提交订单。'); } catch { set('copyResult', '浏览器禁止剪贴板，请根据上方参数手动操作。'); }
+  try { await navigator.clipboard.writeText(t(text)); set('copyResult', '方案已复制；不会提交订单。'); } catch { set('copyResult', '浏览器禁止剪贴板，请根据上方参数手动操作。'); }
 });
 showProfitCache();
 await Promise.all([refresh(), refreshHistory()]);
