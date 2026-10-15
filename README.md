@@ -36,6 +36,8 @@ PROFIT PATH 使用浏览器本地缓存：有有效 48 小时窗口时保存展�
 
 每个来源标记自己的成功状态、时间和区块。HL context 与 Paper trading 的时间是收到响应的时间；Paper 协议、BBO 和 HL 订单簿有来源时间。数据超过 30 秒、参数落后 30 个区块、兑付队列非空、开平仓被禁止、深度不足或清算距离太近时，阻止复制方案。
 
+交易参数兼容 `schemaVersion: 1` 的旧版 `intake` 四元组和新版 `intakeControls` 三元组（2026-10-15 官方接口实测）。新版未提供全局净 OI 上限，`maximumNetOpenInterest` 保持 `null`，手动方案继续阻止；报价、分红与成本监控可正常更新。未知、混合或不完整结构仍按来源失败处理，不沿用历史限额，也不补写故障期间的交易参数。
+
 下单状态流接收时要求发布不超过 5 秒、链头不超过 15 秒；页面中的快照超过 15 秒则阻止方案。Gas 容量折算超过 3 块、提交压力达到 95%、或者前 10 条最大等待超过 30 秒也阻止复制；这是监控的保守策略，不是协议的成交时间保证。Gas 容量折算不是预计等待秒数；队列预览消失不代表已成交。前 10 条保存动作统计，不保存 intent ID 或钱包地址。
 
 执行队列自动进入原有快照 JSON，无需表结构迁移。历史 API/CSV 在原字段之后增加 `execution_source_at`、`execution_queued`、`execution_submitted`、`execution_capacity_blocks`、`execution_saturation_pct`；旧数据没有这些字段时为 null/空白。研究笔记见 [docs/research](docs/research/00%20Papertrade研究索引.md)。
