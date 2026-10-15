@@ -91,12 +91,14 @@ export function makePlan(snapshot, coin, input = {}) {
   if (quantity <= 0 || hedgeEntry === null) reasons.push('订单簿不足以覆盖该数量');
   if (notional < snapshot.trading.minimumOpenNotional || paperMargin < snapshot.trading.minimumMargin) reasons.push('低于 Paper 最小开仓要求');
   if (notional > instrument.maxPositionNotional) reasons.push('超过 Paper 单仓限额');
-  if (![instrument.longCap, instrument.shortCap, instrument.longOi, instrument.shortOi, snapshot.trading.maximumNetOpenInterest].every(Number.isFinite)) reasons.push('Paper OI 容量参数不完整');
+  if (![instrument.longCap, instrument.shortCap, instrument.longOi, instrument.shortOi].every(Number.isFinite)) reasons.push('Paper OI 容量参数不完整');
+  const netLimit = snapshot.trading.maximumNetOpenInterest;
+  if (!Number.isFinite(netLimit)) reasons.push('Paper 全局净 OI 上限未提供，手动方案保持阻止');
   const sideCap = config.paperLong ? instrument.longCap : instrument.shortCap;
   const sideOi = config.paperLong ? instrument.longOi : instrument.shortOi;
   if (sideOi + quantity > sideCap) reasons.push('当前 Paper 方向 OI 容量不足');
   const netAfter = (instrument.longOi - instrument.shortOi) * paperMid + (config.paperLong ? notional : -notional);
-  if (Math.abs(netAfter) > snapshot.trading.maximumNetOpenInterest) reasons.push('当前 Paper 净 OI 容量不足');
+  if (Number.isFinite(netLimit) && Math.abs(netAfter) > netLimit) reasons.push('当前 Paper 净 OI 容量不足');
   if (hedgeEntry === null || quantity <= 0) return { ready: false, reasons, warnings, coin, config };
   const stopMove = config.lossBudget / notional;
   const bustDistance = 1 / config.paperLeverage - instrument.bustBuffer;

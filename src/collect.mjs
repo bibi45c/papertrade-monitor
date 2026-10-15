@@ -21,9 +21,15 @@ export function parseSummary(s) {
 }
 
 export function parseTrading(t) {
-  if (t.schemaVersion !== 1 || !Array.isArray(t.instruments) || !Array.isArray(t.intake) || t.intake.length !== 4 || !Array.isArray(t.intake[3])) throw new Error('Unknown trading schema');
+  if (t.schemaVersion !== 1 || !Array.isArray(t.instruments)) throw new Error('Unknown trading schema');
+  const legacy = Object.hasOwn(t, 'intake'), current = Object.hasOwn(t, 'intakeControls');
+  if (legacy === current) throw new Error('Unknown trading schema');
+  const intake = legacy ? t.intake : t.intakeControls;
+  const blockedActions = intake?.[legacy ? 3 : 2];
+  if (!Array.isArray(intake) || intake.length !== (legacy ? 4 : 3) || !Array.isArray(blockedActions) || blockedActions.some(action => typeof action !== 'string')) throw new Error('Unknown trading schema');
+  // intakeControls omits the global net OI limit; never reuse a historical limit.
   return { block: integer(t.indexedThroughBlock), paused: bool(t.tradingPaused), minimumMargin: raw(t.minimumTradeSizeRaw), minimumOpenNotional: raw(t.minimumOpenNotionalRaw),
-    minimumPaperStake: raw(t.intake[1]), maximumNetOpenInterest: raw(t.intake[2]), blockedActions: t.intake[3],
+    minimumPaperStake: raw(intake[1]), maximumNetOpenInterest: legacy ? raw(intake[2]) : null, blockedActions,
     instruments: t.instruments.map(i => {
       if (!Array.isArray(i) || i.length !== 23 || typeof i[1] !== 'string') throw new Error('Unknown instrument tuple');
       return { id: integer(i[0]), symbol: i[1], assetIndex: integer(i[2]), priceScale: finite(i[3]), active: bool(i[4]), paused: bool(i[5]), terminal: bool(i[6]), openable: i[4] && !i[5],

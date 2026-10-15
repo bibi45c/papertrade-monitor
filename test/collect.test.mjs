@@ -3,6 +3,31 @@ import assert from 'node:assert/strict';
 import { collect, parseSummary, parseTrading, parseQueue, parseBbo, parseProtocolHistory } from '../src/collect.mjs';
 const units = n => String(BigInt(n) * 10n ** 18n);
 function summary() { return { ok: true, source: { block: '123', at: Date.now(), genesis: 0 }, balances: Object.fromEntries(['tvl', 'margin', 'lp', 'reserve', 'queue'].map(k => [k, units(0)])), paper: Object.fromEntries(['supply', 'staked', 'trackedLp', 'accumulator', 'reserve', 'unallocated', 'pendingRewards', 'cliff', 'cap', 'rate', 'decay', 'tailProgress'].map(k => [k, units(100)])), fees: { pending: units(1), lifetime: units(2) }, activity: { volume: units(1), open: 2 } }; }
+function trading(format, at = Date.now(), instruments = []) {
+  return { schemaVersion: 1, tradingPaused: false, indexedThroughBlock: 123, minimumTradeSizeRaw: units(10), minimumOpenNotionalRaw: units(1000), instruments,
+    ...(format === 'legacy' ? { intake: [at, units(1000), units(25000000), ['openPosition']] } : { intakeControls: [at, units(1000), ['openPosition']] }) };
+}
+
+test('both trading formats preserve controls and raw values without inventing a missing limit', () => {
+  for (const format of ['legacy', 'current']) {
+    const source = trading(format), parsed = parseTrading(source);
+    assert.equal(parsed.minimumPaperStake, 1000);
+    assert.equal(parsed.maximumNetOpenInterest, format === 'legacy' ? 25000000 : null);
+    assert.deepEqual(parsed.blockedActions, ['openPosition']); assert.equal(parsed.raw, source);
+  }
+});
+
+test('ambiguous, malformed and unknown trading formats fail closed', () => {
+  const source = trading('current');
+  for (const invalid of [
+    { ...source, schemaVersion: 2 }, { ...source, intake: trading('legacy').intake },
+    { ...source, intakeControls: null }, { ...source, intakeControls: [1, units(1000), units(25000000), []] },
+    { ...source, intakeControls: [1, units(1000), null] }, { ...source, intakeControls: [1, units(1000), [null]] },
+    { ...source, intakeControls: [1, null, []] }, { ...source, intakeControls: [1, [], units(1000)] },
+    { ...trading('legacy'), intake: [1, units(1000), null, []] },
+  ]) assert.throws(() => parseTrading(invalid));
+  const missing = { ...source }; delete missing.intakeControls; assert.throws(() => parseTrading(missing));
+});
 test('raw 18-decimal values are normalized while original strings are retained', () => { const s = summary(), parsed = parseSummary(s); assert.equal(parsed.paper.supply, 100); assert.equal(parsed.raw.paper.supply, units(100)); });
 test('unknown schema and missing amount cannot become successful zero values', () => {
   const s = summary(); delete s.paper.supply; assert.throws(() => parseSummary(s));
@@ -19,14 +44,14 @@ test('network failures are recorded per source, with null protocol metrics', asy
   assert.equal(s.sources.paperBbo.ok, false); assert.equal(s.paperMarketPrice.value, null);
   assert.equal(s.executionQueue.available, false); assert.equal(s.sources.executionQueue.ok, false);
 });
-test('complete collection pins BBO reads and retries one transient RPC error', async () => {
+for (const format of ['legacy', 'current']) test(`complete ${format} collection pins BBO reads and retries one transient RPC error`, async () => {
   const at = Date.now(), seenBlocks = [], requests = []; let batches = 0;
   const tuple = [0, 'BTC', 0, '10', true, false, false, false, false, null, null, null, units(15000), units(814), 1000, units(10000000), '500000000000000', units(0), units(100000), units(0), units(0), units(1000000), units(1000000)];
   const s = await collect({ auxiliary: false, deriveRisk: false, pressureReader: async () => ({ available: true, sourceAt: at, block: '123', queuedIntents: 0 }), fetcher: async (url, request) => {
     requests.push([url, request.body]);
     const body = request.body ? JSON.parse(request.body) : null; let payload;
     if (url.endsWith('/query/protocol/summary')) payload = summary();
-    else if (url.endsWith('/state/trading')) payload = { schemaVersion: 1, tradingPaused: false, indexedThroughBlock: 123, minimumTradeSizeRaw: units(10), minimumOpenNotionalRaw: units(1000), instruments: [tuple], intake: [at, units(1000), units(25000000), []] };
+    else if (url.endsWith('/state/trading')) payload = trading(format, at, [tuple]);
     else if (url.endsWith('/queue-summary')) payload = { ok: true, source: { at, block: '123' }, total: '0', count: 0, largest: null, front: null };
     else if (url.endsWith('/paper/activity')) payload = { items: [], latestDistribution: null };
     else if (body?.type === 'metaAndAssetCtxs') payload = [{ universe: ['BTC', 'ETH', 'HYPE'].map(name => ({ name, szDecimals: 5, maxLeverage: 40 })), marginTables: [] }, [1, 2, 3].map(() => ({ midPx: '80000.5', markPx: '80000.5', oraclePx: '80000.5', funding: '.00001', openInterest: '10', dayNtlVlm: '1000' }))];
@@ -37,6 +62,8 @@ test('complete collection pins BBO reads and retries one transient RPC error', a
     return new Response(JSON.stringify(payload));
   } });
   assert.equal(s.markets[0].paperMid, 80000.5); assert.equal(s.sources.paperBbo.ok, true);
+  assert.equal(s.sources.trading.ok, true); assert.deepEqual(s.trading.blockedActions, ['openPosition']);
+  assert.equal(s.trading.maximumNetOpenInterest, format === 'legacy' ? 25000000 : null);
   assert.equal(s.rewardAccumulatorRaw, units(100)); assert.deepEqual(seenBlocks, ['0x7b', '0x7b']);
   assert.equal(s.executionQueue.available, true); assert.equal(s.sources.executionQueue.at, at);
   assert.deepEqual(s.markets.map(m => m.coin), ['BTC', 'ETH']); assert.equal(s.lpRiskDeferred, true);

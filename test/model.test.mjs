@@ -56,6 +56,15 @@ test('OI capacity uses base asset units for the side cap', () => {
   const pass = sample(); pass.trading.instruments = [{ ...instrument, longCap: 101 }];
   assert.equal(makePlan(pass, 'BTC').ready, true);
 });
+test('missing global net OI limit blocks plans without reporting a false capacity breach', () => {
+  const s = sample(); s.trading.maximumNetOpenInterest = null;
+  const p = makePlan(s, 'BTC');
+  assert.equal(p.ready, false); assert.equal(p.scenarios.length, 2);
+  assert.ok(p.reasons.includes('Paper 全局净 OI 上限未提供，手动方案保持阻止'));
+  assert.ok(!p.reasons.includes('当前 Paper 净 OI 容量不足'));
+  s.trading.maximumNetOpenInterest = 100;
+  assert.ok(makePlan(s, 'BTC').reasons.includes('当前 Paper 净 OI 容量不足'));
+});
 test('fractional leverage is rejected because both venues require integer leverage', () => {
   assert.equal(makePlan(sample(), 'BTC', { paperLeverage: 20.5 }).ready, false);
 });

@@ -385,6 +385,7 @@ export const english = {
   "低于 Paper 最小开仓要求": "Below Paper minimum opening requirements",
   "超过 Paper 单仓限额": "Exceeds Paper per-position limit",
   "Paper OI 容量参数不完整": "Paper OI capacity parameters incomplete",
+  "Paper 全局净 OI 上限未提供，手动方案保持阻止": "Paper global net OI limit unavailable; manual plan remains blocked",
   "当前 Paper 方向 OI 容量不足": "Insufficient Paper OI capacity for this direction",
   "当前 Paper 净 OI 容量不足": "Insufficient Paper net OI capacity",
   "止损接近硬清算触发价，无法可靠对冲全额损失": "Stop loss is near hard liquidation; full loss cannot be reliably hedged",
