@@ -90,7 +90,8 @@ function drawExposure() {
 const SERIES_URL = 'https://raw.githubusercontent.com/bibi45c/papertrade-monitor-data/main/series/exposure-series.json';
 async function loadExposure() {
   const get = async url => { try { const r = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(20000) }); return r.ok ? await r.json() : null; } catch { return null; } };
-  const [local, recent] = await Promise.all([get('/exposure-series.json'), get('/api/exposure?days=14')]);
+  const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const [local, recent] = await Promise.all([isLocal ? get('/exposure-series.json') : null, get('/api/exposure?days=14')]);
   exposureSeries = mergeSeries(local ?? await get(SERIES_URL), recent);
   drawExposure();
 }
