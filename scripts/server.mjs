@@ -10,6 +10,7 @@ await mkdir(root + 'data', { recursive: true });
 const database = new DatabaseSync(root + 'data/history.sqlite');
 database.exec(await readFile(root + 'migrations/0001_snapshots.sql', 'utf8'));
 database.exec(await readFile(root + 'migrations/0002_auxiliary.sql', 'utf8'));
+database.exec(await readFile(root + 'migrations/0003_chain_hourly.sql', 'utf8'));
 const db = { prepare(sql) { let values = []; return {
   bind(...args) { values = args; return this; },
   async run() { return database.prepare(sql).run(...values); },
@@ -30,7 +31,7 @@ await enrich();
 setInterval(enrich, 5 * 60000).unref();
 const port = Number(process.env.PORT ?? 8787);
 const types = { html: 'text/html;charset=utf-8', css: 'text/css;charset=utf-8', mjs: 'text/javascript;charset=utf-8', svg: 'image/svg+xml' };
-const allowed = new Set(['index.html', 'style.css', 'app.mjs', 'model.mjs', 'profit-cache.mjs', 'i18n.mjs', 'translations.mjs', 'favicon.svg']);
+const allowed = new Set(['index.html', 'style.css', 'app.mjs', 'model.mjs', 'profit-cache.mjs', 'i18n.mjs', 'translations.mjs', 'favicon.svg', 'exposure.mjs', 'governance-view.mjs', 'alerts-view.mjs', 'supply-chart.mjs']);
 http.createServer(async (req, res) => {
   const origin = `http://127.0.0.1:${port}`;
   try {
@@ -42,6 +43,8 @@ http.createServer(async (req, res) => {
     }
     if (req.method !== 'GET') { res.writeHead(405); res.end(); return; }
     const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
+    // 本地预览：由 scripts/build-exposure-series.mjs 生成的净持仓/金库历史（未部署到云端）。
+    if (name === 'exposure-series.json') { try { const body = await readFile(root + 'data/exposure-series.json'); res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(body); } catch { res.writeHead(404); res.end('Not found'); } return; }
     if (!allowed.has(name)) { res.writeHead(404); res.end('Not found'); return; }
     const content = name === 'model.mjs' ? await readFile(root + 'src/model.mjs') : await readFile(root + 'public/' + name);
     res.writeHead(200, { 'Content-Type': types[name.split('.').at(-1)] ?? 'text/plain', 'Cache-Control': 'no-store' }); res.end(content);

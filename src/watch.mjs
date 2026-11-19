@@ -3,13 +3,13 @@
 import { readJson, ReadError, checkRpcError } from './read-retry.mjs';
 
 export const GOVERNANCE = Object.freeze({
-  timelock: '0xb915fa41e824d6aa31bb833ee81220c0f2c8ea0f',   // Exchange / PAPER / Staking / Tokenomics / ProxyAdmin 的 owner，minDelay 7 天
+  timelock: '0xb915fa41e824d6aa31bb833ee81220c0f2c8ea0f',   // Exchange / PAPER / Staking / Tokenomics / ProxyAdmin 的 owner；minDelay 原为 7 天，2026-10-20 的排程 updateMinDelay(86400) 执行后为 1 天（2026-11-19 链上 minDelay() 核对）
   multisig: '0x696292762fd5ac3677a45edbe54eaece4194d1f6',   // timelock 的 owner，同时是 pause guardian
   exchange: '0x6cd5661646289fb6e65ea5c032310fded797d0a2',
   tokenomics: '0x75174549dbbd44497d31a47e2e2d7406408d63d9',
   proxyAdmin: '0xe79c91cc682f1bb401a9cab74c900470190f0f8f',
   marketKeeper: '0x3721476de31190dc1af8908026abe20efe25cf99',
-  minDelaySeconds: 604800,
+  minDelaySeconds: 86400,
 });
 // 合约源码未验证；以下事件和函数名由 2026-10-11 的链上交易反推。
 const TOPICS = Object.freeze({
@@ -22,7 +22,39 @@ const SELECTORS = Object.freeze({
   '12baae3b': 'PaperTokenomics 曲线参数（平坦区阈值、质押者分配上限、平坦铸币率、衰减尺度，按调用参数位置推断）',
   'b0e58bc9': 'timelock.schedule(target, value, data, salt)',
   '79301c0f': '多签签名人配置',
+  // 2026-11-19 按公开函数签名库（openchain）与链上调用核对的标准函数名。
+  'a9059cbb': 'ERC20 转账 transfer(收款地址, 数量)',
+  '095ea7b3': 'ERC20 授权 approve(被授权地址, 数量)',
+  '99a88ec4': '合约升级 upgrade(代理合约, 新实现合约)',
+  '8a99d586': '修改 timelock 最短延迟 updateMinDelay(秒)',
+  '54dc2a02': '批准 Hyperliquid builder approveBuilder(地址)',
+  '17938e13': '向 HyperCore 发送动作 sendRawAction(编码动作)',
+  'a6cc2c8c': 'timelock 批量执行已到期排程 executeBatch',
+  'e38335e5': 'timelock 批量执行已到期排程 executeBatch',
+  '8f2a0bb0': 'timelock 批量排程 scheduleBatch',
+  '134008d3': 'timelock 执行已到期排程 execute',
+  '88aa4c12': 'timelock 执行已到期排程 execute',
 });
+// 地址参数位置（按函数签名）；数量参数按已知代币精度换算，未知代币保留原始整数。
+const ADDRESS_ARGS = Object.freeze({ a9059cbb: [0], '095ea7b3': [0], '99a88ec4': [0, 1], '54dc2a02': [0] });
+const TOKENS = Object.freeze({ '0xb88339cb7199b77e23db6e890353e22632ba630f': { symbol: 'USDC', decimals: 6 } });
+const PLACES = Object.freeze({ '0x3333333333333333333333333333333333333333': 'HyperCore CoreWriter（EVM → Hyperliquid Core）', '0xb88339cb7199b77e23db6e890353e22632ba630f': 'USDC 代币合约' });
+const fromDecimal = v => { try { return '0x' + BigInt(v).toString(16).padStart(40, '0'); } catch { return v; } };
+// 把旧记录里的十进制参数整理成可读形式；已保存的原始 args 不改，只在 label/display 上补充。
+export function relabelCall(call) {
+  if (!call?.selector) return call;
+  const selector = call.selector, label = SELECTORS[selector] ?? call.label, out = { ...call, label };
+  if (PLACES[call.target] && (call.where === call.target || !call.where)) out.where = PLACES[call.target];
+  if (call.target === GOVERNANCE.timelock) out.where = 'Timelock（最短延迟 1 天）';
+  if (Array.isArray(call.args)) {
+    const shown = call.args.map((v, i) => ADDRESS_ARGS[selector]?.includes(i) ? fromDecimal(v) : v);
+    const token = TOKENS[call.target];
+    if (['a9059cbb', '095ea7b3'].includes(selector) && token && shown[1] !== undefined) shown[1] = (Number(BigInt(shown[1])) / 10 ** token.decimals).toLocaleString('en-US', { maximumFractionDigits: token.decimals }) + ' ' + token.symbol;
+    out.display = shown;
+  }
+  if (call.inner) out.inner = relabelCall(call.inner);
+  return out;
+}
 // 已知的排程操作：2026-10-11 01:26 新加坡时间由多签确认，只改质押者分配上限 5M → 10M。
 export const KNOWN_OPERATIONS = Object.freeze([{
   id: '0x51142366b8d5ae8d41322de14a7627f265e2ab54ee65828bbbaa14f6090cb578', target: GOVERNANCE.tokenomics, selector: '12baae3b',
@@ -40,7 +72,7 @@ export function describeCall(target, data) {
   const selector = data.slice(0, 8), body = data.slice(8), words = [];
   for (let i = 0; i * 64 < body.length; i++) words.push(word(body, i));
   const label = SELECTORS[selector] ?? `未知函数 0x${selector}`;
-  const where = target === GOVERNANCE.exchange ? 'Exchange（交易、市场、费率）' : target === GOVERNANCE.tokenomics ? 'PaperTokenomics（铸币与分配曲线）' : target === GOVERNANCE.proxyAdmin ? 'ProxyAdmin（合约升级）' : target === GOVERNANCE.timelock ? 'Timelock（7 天延迟）' : target === GOVERNANCE.multisig ? '多签自身' : target;
+  const where = target === GOVERNANCE.exchange ? 'Exchange（交易、市场、费率）' : target === GOVERNANCE.tokenomics ? 'PaperTokenomics（铸币与分配曲线）' : target === GOVERNANCE.proxyAdmin ? 'ProxyAdmin（合约升级）' : target === GOVERNANCE.timelock ? 'Timelock（最短延迟 1 天）' : target === GOVERNANCE.multisig ? '多签自身' : target;
   // 多签提交给 timelock 的 schedule：再解一层，提前约半小时看到将要排程的目标与函数。
   if (selector === 'b0e58bc9' && words.length >= 5) {
     const innerTarget = toAddress(words[0]), offset = Number(big(words[2])) * 2, len = Number(big(body.slice(offset, offset + 64)));
@@ -84,29 +116,40 @@ function subtractRange(ranges, from, through) {
   return ranges.flatMap(([a, b]) => b < from || a > through ? [[a, b]] : [...(a < from ? [[a, from - 1]] : []), ...(b > through ? [[through + 1, b]] : [])]);
 }
 
+// The official RPC rate-limits getLogs to ~1,000-block ranges, so historical gaps never caught up. Gap healing first
+// tries a public archive RPC with 50,000-block ranges (verified 2026-11-19 against the official node), then falls back.
+export const GAP_RPC = 'https://rpc.hyperlend.finance/archive';
 // One recent chunk, then oldest pending chunks. Successful ranges alone are removed.
-export async function scanGovernance({ fetcher = fetch, previous = null, maxChunks = 3 } = {}) {
+export async function scanGovernance({ fetcher = fetch, previous = null, maxChunks = 3, archiveUrl = GAP_RPC, gapChunkBlocks = 50000, maxGapChunks = 8 } = {}) {
   if (!Number.isSafeInteger(maxChunks) || maxChunks < 1 || maxChunks > 10) throw new RangeError('Invalid governance chunk budget');
-  const rpc = (method, params) => readJson('https://rpc.hyperliquid.xyz/evm', { jsonrpc: '2.0', id: 1, method, params }, fetcher, { validate: v => { checkRpcError(v); if (!('result' in v)) throw new ReadError('Missing RPC result', true); return v.result; } });
-  const head = Number(BigInt(await rpc('eth_blockNumber', [])));
+  const client = url => (method, params) => readJson(url, { jsonrpc: '2.0', id: 1, method, params }, fetcher, { validate: v => { checkRpcError(v); if (!('result' in v)) throw new ReadError('Missing RPC result', true); return v.result; } });
+  const rpc = client('https://rpc.hyperliquid.xyz/evm'), archive = archiveUrl ? client(archiveUrl) : null;
+  // The official node rate-limits even eth_blockNumber at times; the archive node answers the head instead.
+  const head = Number(BigInt(await rpc('eth_blockNumber', []).catch(error => archive ? archive('eth_blockNumber', []) : Promise.reject(error))));
   const last = Number.isSafeInteger(previous?.lastScannedBlock) ? previous.lastScannedBlock : Math.max(0, head - 300);
   if (head < last) throw new Error('Governance head moved behind cursor');
   const from = Math.max(last + 1, head - 999, 0), logs = [], readErrors = [];
   let gaps = mergeBlockRanges([...(previous?.gaps ?? []), ...(from > last + 1 ? [[last + 1, from - 1]] : [])]);
-  const read = async (start, end) => {
+  const read = async (start, end, via = rpc, quiet = false) => {
     try {
-      const result = await rpc('eth_getLogs', [{ address: [GOVERNANCE.timelock, GOVERNANCE.multisig], fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
+      const result = await via('eth_getLogs', [{ address: [GOVERNANCE.timelock, GOVERNANCE.multisig], fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
       if (!Array.isArray(result)) throw new Error('Invalid governance log response');
       // Decode before marking a range covered: malformed logs must remain recoverable.
       result.forEach(decodeLog);
       logs.push(...result); gaps = subtractRange(gaps, start, end); return true;
     } catch (error) {
       gaps = mergeBlockRanges([...gaps, [start, end]]);
-      readErrors.push({ from: start, through: end, error: String(error.message ?? error).slice(0, 180) }); return false;
+      if (!quiet) readErrors.push({ from: start, through: end, error: String(error.message ?? error).slice(0, 180) });
+      return false;
     }
   };
   let used = 0;
   if (from <= head) { await read(from, head); used++; }
+  // Large archive reads for the oldest gaps; a failed archive read leaves the gap for the official fallback below.
+  for (let n = 0; archive && n < maxGapChunks && gaps.length; n++) {
+    const [start, lastBlock] = gaps[0], end = Math.min(lastBlock, start + gapChunkBlocks - 1);
+    if (!await read(start, end, archive, true)) break;
+  }
   while (used < maxChunks && gaps.length) {
     const [start, lastBlock] = gaps[0], end = Math.min(lastBlock, start + 999);
     used++;

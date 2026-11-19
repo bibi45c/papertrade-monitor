@@ -70,6 +70,51 @@ export function parseBbo(hex, scale) {
 
 const fetchJson = readJson;
 
+// PaperTokenomics 直接读链（合约未验证；函数名来自公开签名库 openchain。0xc16017ca 无公开名，
+// 按 2026-10-11 排程 12baae3b 的参数位置与当前数值核对为质押者分配上限，即“超额分配阈值”）。
+export const TOKENOMICS = Object.freeze({ address: '0x75174549dbbd44497d31a47e2e2d7406408d63d9',
+  reads: { cap: '0xc16017ca', cliff: '0xe9ed73e9', flatRate: '0x1c3972ba', decay: '0xcbb451da' } });
+// Trader book from the official leaderboard: every account with open positions, sorted by open notional.
+// The per-account currentUnrealizedPnl summed over all open accounts is the LP's mark-to-market liability.
+// Coverage is checked against the endpoint's own trackedOpenNotional; an incomplete sum is an error, never a partial value.
+export async function readTraderBook({ fetcher = fetch, pageSize = 100, maxPages = 30 } = {}) {
+  const n = v => Number(BigInt(v)) / 1e18, accounts = [];
+  let tracked = null;
+  for (let page = 0; page < maxPages; page++) {
+    const qs = new URLSearchParams([['page', String(page)], ['pageSize', String(pageSize)], ['sortDir', 'desc'], ['sortKey', 'currentOpenNotional'], ['window', 'all']]);
+    const j = await fetchJson(URLS.paper + '/state/leaderboard/accounts?' + qs, undefined, fetcher);
+    if (j?.ok !== true || !Array.isArray(j.accounts) || !j.summary) throw new Error('Unknown leaderboard schema');
+    tracked = j.summary.trackedOpenNotional;
+    for (const a of j.accounts) if (!accounts.some(b => b.address === a.address)) accounts.push(a); // pages are read moments apart; drop repeats
+    if (!j.accounts.length || j.accounts.some(a => BigInt(a.currentOpenNotional) === 0n) || page + 1 >= j.pageInfo?.totalPages) break;
+  }
+  const open = accounts.filter(a => BigInt(a.currentOpenNotional) > 0n);
+  const openNotional = open.reduce((s, a) => s + BigInt(a.currentOpenNotional), 0n);
+  // Pages are separate reads of a live book, so allow 0.5% drift against the endpoint's own total; beyond that the sum is rejected.
+  const coverage = tracked === null || BigInt(tracked) === 0n ? null : n(openNotional) / n(tracked);
+  if (coverage === null || Math.abs(coverage - 1) > 0.005) throw new Error('Leaderboard open notional does not match tracked total');
+  const upnl = open.map(a => n(a.currentUnrealizedPnl));
+  return { at: Date.now(), accounts: open.length, openNotional: n(openNotional), coverage, unrealizedPnl: upnl.reduce((s, v) => s + v, 0),
+    winners: upnl.filter(v => v > 0).reduce((s, v) => s + v, 0), losers: upnl.filter(v => v < 0).reduce((s, v) => s + v, 0),
+    largest: open.map(a => ({ address: a.address, unrealizedPnl: n(a.currentUnrealizedPnl), openNotional: n(a.currentOpenNotional) })).sort((a, b) => b.unrealizedPnl - a.unrealizedPnl).slice(0, 5) };
+}
+
+export async function readTokenomics({ fetcher = fetch } = {}) {
+  const keys = Object.keys(TOKENOMICS.reads);
+  const requests = [{ jsonrpc: '2.0', id: 0, method: 'eth_blockNumber', params: [] },
+    ...keys.map((k, i) => ({ jsonrpc: '2.0', id: i + 1, method: 'eth_call', params: [{ to: TOKENOMICS.address, data: TOKENOMICS.reads[k] }, 'latest'] }))];
+  const reads = await fetchJson(URLS.rpc, requests, fetcher, { validate: value => {
+    if (!Array.isArray(value)) { checkRpcError(value); throw new Error('Unknown RPC batch'); }
+    for (const read of value) checkRpcError(read);
+    if (!requests.every(r => value.some(v => v.id === r.id && /^0x[0-9a-f]+$/i.test(v.result ?? '')))) throw new ReadError('Incomplete RPC batch', true);
+    return value;
+  } });
+  const word = id => BigInt(reads.find(r => r.id === id).result.slice(0, 66));
+  const out = { at: Date.now(), block: String(Number(word(0))), address: TOKENOMICS.address, raw: {} };
+  keys.forEach((k, i) => { const v = word(i + 1); out.raw[k] = v.toString(); out[k] = Number(v) / 1e18; });
+  return out;
+}
+
 export async function collect({ fetcher = fetch, now = Date.now(), pressureReader = () => readExecutionQueue({ fetcher }), previous = null, checkWeb = false, scanGov = false, auxiliary = true, deriveRisk = true } = {}) {
   const result = { version: 1, collectedAt: now, sources: {}, markets: [], paper: null, balances: null, trading: null, queue: null,
     executionQueue: { available: false, reason: '全球执行队列尚未收到有效状态；个人排名未查询。' }, paperMarketPrice: { value: null, reason: '启动期 PAPER 不可转让；未核实可交易市场，分红和铸币成本不能替代市场报价。' } };
@@ -87,6 +132,8 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
     ...(auxiliary ? [['protocolHistory', async () => parseProtocolHistory(await fetchJson(URLS.paper + '/query/protocol/history?interval=1h', undefined, fetcher))]] : []),
     ...(auxiliary && scanGov ? [['governance', () => scanGovernance({ fetcher, previous: previous?.governance ?? null })]] : []),
     ...(auxiliary && checkWeb ? [['web', () => readWebVersions({ fetcher })]] : []),
+    ['tokenomics', () => readTokenomics({ fetcher })],
+    ['traderBook', () => readTraderBook({ fetcher })],
     ['context', async () => {
       const context = await fetchJson(URLS.info, { type: 'metaAndAssetCtxs' }, fetcher);
       if (!Array.isArray(context) || !Array.isArray(context[0]?.universe) || !Array.isArray(context[1])) throw new Error('Unknown HL context schema');
@@ -121,7 +168,7 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
     result.web = { ...values.web, changedAt: changed ? values.web.at : priorWeb?.changedAt ?? null, previous: changed ? { docs: priorWeb.docs, app: priorWeb.app, at: priorWeb.at } : priorWeb?.previous ?? null };
   } else result.web = priorWeb;
   result.events = upcomingEvents(now);
-  result.trading = values.trading ?? null; result.queue = values.queue ?? null;
+  result.trading = values.trading ?? null; result.queue = values.queue ?? null; result.tokenomics = values.tokenomics ?? null; result.traderBook = values.traderBook ?? null;
   result.executionQueue = values.executionQueue ?? { available: false, reason: result.sources.executionQueue.error };
   if (result.trading) delete result.trading.raw;
   if (result.queue) delete result.queue.raw;

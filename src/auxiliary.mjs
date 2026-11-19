@@ -1,6 +1,6 @@
 import { URLS, parseProtocolHistory } from './collect.mjs';
 import { readJson } from './read-retry.mjs';
-import { scanGovernance, readWebVersions } from './watch.mjs';
+import { scanGovernance, readWebVersions, relabelCall } from './watch.mjs';
 
 // Separate invocation and state: an auxiliary failure cannot erase a core minute.
 export async function collectAuxiliary({ fetcher = fetch, previous = null, now = Date.now(), checkWeb = true } = {}) {
@@ -37,6 +37,9 @@ export async function collectAuxiliary({ fetcher = fetch, previous = null, now =
 
 export function attachAuxiliary(snapshot, auxiliary) {
   if (!snapshot || !auxiliary) return snapshot;
-  return { ...snapshot, protocolHours: auxiliary.protocolHours, governance: auxiliary.governance, web: auxiliary.web,
+  const g = auxiliary.governance;
+  // 展示视图按当前函数表重新标注；已保存的原始记录不改写。
+  const governance = g ? { ...g, operations: (g.operations ?? []).map(relabelCall), recentEvents: (g.recentEvents ?? []).map(e => e.call ? { ...e, call: relabelCall(e.call) } : e) } : g;
+  return { ...snapshot, protocolHours: auxiliary.protocolHours, governance, web: auxiliary.web,
     auxiliaryAt: auxiliary.completedAt, sources: { ...snapshot.sources, ...Object.fromEntries(Object.entries(auxiliary.sources ?? {}).filter(([k, v]) => ['governance', 'web', 'protocolHistory'].includes(k) && v).map(([k, v]) => [k, { ...v, retained: true }])) } };
 }

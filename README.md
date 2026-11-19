@@ -150,3 +150,11 @@ node scripts/repair-history.mjs
 - Paper 当前前端公开 `/query/protocol/summary`、`/query/protocol/queue-summary`、`/query/protocol/paper/activity`、`/state/trading`，字段和 tuple 来自官方部署页面的公开脚本。这些未版本化接口可能改变；遇到未知 schema 需修复解析器，不能当作零。
 - [HL API](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint)、[手续费](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees)、[资金费](https://hyperliquid.gitbook.io/hyperliquid-docs/trading/funding)、[HyperEVM 预编译](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/interacting-with-hypercore)。
 - [Cloudflare 静态网页](https://developers.cloudflare.com/workers/static-assets/)、[D1](https://developers.cloudflare.com/d1/get-started/)、[Cron](https://developers.cloudflare.com/workers/configuration/cron-triggers/)、[免费额度](https://developers.cloudflare.com/d1/platform/pricing/)。每分钟一行约 1440 行/天；索引也计入写入额度，历史查询与访问量也消耗额度。先使用免费计划，未授权升级付费方案。
+
+## 净持仓、金库与链上数据（2026-11-19）
+
+- `/api/exposure?days=14`：只读，从 D1 每 15 分钟取首条快照，返回 BTC/ETH 多空持仓、LP 可用余额、treasury、中间价与交易者浮盈，列顺序与数据仓库 `series/exposure-series.json` 相同。页面用长期序列（首尔服务器每天生成，读 GitHub 原始文件）拼接最近 14 天。
+- 采集新增两个只读来源：`tokenomics`（直接读 PaperTokenomics：超额分配阈值 `0xc16017ca()`、平坦区阈值 `lpFlatThresholdUsd()`、`flatRate()`、`tailDecayScaleUsd()`）和 `traderBook`（官方排行榜 `/state/leaderboard/accounts` 全部持仓账户的 `currentUnrealizedPnl` 合计；与接口自身 `trackedOpenNotional` 偏差超过 0.5% 时该分钟记为失败）。
+- `0003_reward_index_chain.sql`：快照缺失的整点，由辅助任务按区块读取质押合约累加器 `0x939d6237()` 补入；`/api/dividend-history` 合并时带 `source: 'chain'`，不改写快照。
+- 治理补扫先用归档 RPC（`rpc.hyperlend.finance/archive`，每段 5 万块），失败再退回官方节点 1,000 块分段；官方节点读取区块头失败时也用归档 RPC。
+- Exchange 合约未验证源码；`lpBankrollAvailable()`、`treasury()`、`0xcb163b03(instrumentId)`（多/空持仓、多/空上限、价格精度）为 2026-11-19 按字节码选择器与官方接口数值比对确认。

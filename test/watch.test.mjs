@@ -57,7 +57,7 @@ test('LP drain risk solves the move that pushes tracked LP to the flat-rate thre
 test('governance coverage heals oldest gaps without forgetting more than ten ranges', async () => {
   const gaps = Array.from({ length: 12 }, (_, i) => [i * 2000, i * 2000 + 1500]);
   const calls = [];
-  const s = await scanGovernance({ previous: { lastScannedBlock: 30000, gaps }, maxChunks: 3, fetcher: async (_url, options) => {
+  const s = await scanGovernance({ previous: { lastScannedBlock: 30000, gaps }, maxChunks: 3, archiveUrl: null, fetcher: async (_url, options) => {
     const q = JSON.parse(options.body);
     if (q.method === 'eth_blockNumber') return Response.json({ result: '0x' + (30300).toString(16) });
     calls.push(q.params[0]); return Response.json({ result: [] });
@@ -66,6 +66,25 @@ test('governance coverage heals oldest gaps without forgetting more than ten ran
   assert.equal(Number(calls[1].fromBlock), 0); assert.equal(Number(calls[2].fromBlock), 1000);
   assert.equal(s.gaps.length, 11); assert.equal(s.gaps[0][0], 2000); assert.equal(s.coverageComplete, false);
   assert.deepEqual(mergeBlockRanges([[5, 10], [0, 4], [8, 15], [25, 30]]), [[0, 15], [25, 30]]);
+});
+
+test('archive RPC heals large gap ranges first; a failing archive falls back to official chunks', async () => {
+  const gaps = [[0, 120000], [200000, 210000]];
+  const seen = [];
+  const s = await scanGovernance({ previous: { lastScannedBlock: 300000, gaps }, maxChunks: 2, archiveUrl: 'https://archive.test', fetcher: async (url, options) => {
+    const q = JSON.parse(options.body);
+    if (q.method === 'eth_blockNumber') return Response.json({ result: '0x' + (300100).toString(16) });
+    seen.push([url.includes('archive') ? 'archive' : 'official', Number(q.params[0].fromBlock), Number(q.params[0].toBlock)]); return Response.json({ result: [] });
+  } });
+  assert.deepEqual(seen.filter(c => c[0] === 'archive').map(c => [c[1], c[2]]), [[0, 49999], [50000, 99999], [100000, 120000], [200000, 210000]]);
+  assert.equal(s.gaps.length, 0); assert.equal(s.readErrors.length, 0);
+  const fallback = await scanGovernance({ previous: { lastScannedBlock: 300000, gaps: [[0, 5000]] }, maxChunks: 2, archiveUrl: 'https://archive.test', fetcher: async (url, options) => {
+    const q = JSON.parse(options.body);
+    if (q.method === 'eth_blockNumber') return Response.json({ result: '0x' + (300100).toString(16) });
+    if (url.includes('archive')) return Response.json({ error: { code: -32005, message: 'rate limited' } });
+    return Response.json({ result: [] });
+  } });
+  assert.deepEqual(fallback.gaps, [[1000, 5000]]); assert.equal(fallback.readErrors.length, 0);
 });
 
 test('failed governance chunks remain pending while successful live coverage is retained', async () => {

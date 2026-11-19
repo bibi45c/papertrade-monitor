@@ -48,3 +48,27 @@ test('archive pages report the row count between the cursor and the upper bound'
   assert.deepEqual(page.window, { after: start + 60000, count: 2 });
   assert.equal(page.available.count, 4);
 });
+
+test('chain hours fill dividend history and history buckets without snapshots, never replacing a snapshot', async () => {
+  const { getDividendHistory, getHistory } = await import('../src/storage.mjs');
+  const db = database(); db.native.exec(readFileSync(new URL('../migrations/0003_chain_hourly.sql', import.meta.url), 'utf8'));
+  const end = 1000 * 3600000, now = end + 30 * 60000, e18 = v => (BigInt(v) * 10n ** 18n).toString();
+  await saveSnapshot(db, { collectedAt: end, markets: [], sources: {}, rewardAccumulatorRaw: '200', paper: { supply: 5 } });
+  for (const [h, acc] of [[end - 3600000, '100'], [end, '999']]) db.native.prepare('INSERT INTO chain_hourly (hour_at, block, block_at, paper_supply, staked_supply, accumulator, read_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(h, 1, h + 2000, e18(7), e18(6), acc, now);
+  const rows = (await getDividendHistory(db, now)).rows;
+  assert.deepEqual(rows.map(r => [r.collected_at - end, r.reward_accumulator, r.source ?? 'snapshot']), [[-3598000, '100', 'chain'], [0, '200', 'snapshot']]);
+  const h = (await getHistory(db, 2, now)).rows;
+  assert.deepEqual(h.map(r => [r.collected_at - end, r.paper_supply, r.source ?? 'snapshot']), [[-3598000, 7, 'chain'], [0, 5, 'snapshot']]);
+});
+
+test('exposure endpoint returns the first snapshot per 15 minutes with legs matched by symbol', async () => {
+  const db = database(), now = Date.parse('2026-11-19T06:00:00Z');
+  const snap = (at, swap) => ({ collectedAt: at, markets: [{ coin: 'BTC', mid: 60000 }, { coin: 'ETH', mid: 2000 }], sources: { traderBook: { ok: true } }, traderBook: { unrealizedPnl: -5 },
+    balances: { lp: 4.9e6, tvl: 2e7 }, trading: { instruments: swap ? [{ symbol: 'ETH', longOi: 3, shortOi: 4 }, { symbol: 'BTC', longOi: 1, shortOi: 2 }] : [{ symbol: 'BTC', longOi: 1, shortOi: 2 }, { symbol: 'ETH', longOi: 3, shortOi: 4 }] } });
+  for (const [m, swap] of [[0, false], [5, false], [15, true]]) await saveSnapshot(db, snap(now - 60 * 60000 + m * 60000, swap));
+  const res = await api(new Request('https://test/api/exposure?days=1'), db);
+  assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
+  const { points } = await res.json();
+  assert.equal(points.length, 2);
+  assert.deepEqual(points[1].slice(1, 9), [4.9e6, 2e7, 1, 2, 3, 4, 60000, 2000]); assert.equal(points[1][11], -5);
+});

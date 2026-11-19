@@ -1,6 +1,7 @@
 import { collect } from './collect.mjs';
-import { saveSnapshot, latestSnapshot, getHistory, getDividendHistory, purgeExpired, exportDay, exportSnapshots, loadAuxiliary, saveAuxiliary } from './storage.mjs';
+import { saveSnapshot, latestSnapshot, getHistory, getDividendHistory, getExposure, purgeExpired, exportDay, exportSnapshots, loadAuxiliary, saveAuxiliary } from './storage.mjs';
 import { collectAuxiliary, attachAuxiliary } from './auxiliary.mjs';
+import { fillChainHourly } from './chain-index.mjs';
 
 // Workers 不能跨请求共享进行中的 I/O：发起采集的请求被客户端取消后，共享的 Promise 永远不结束，
 // 同一实例后续未命中缓存的 /api/live 会全部挂起。所以每个请求自己采集，只复用 8 秒内已完成的结果，
@@ -36,6 +37,7 @@ export async function api(request, db) {
   }
   if (url.pathname === '/api/history') return json(await getHistory(db, Number(url.searchParams.get('hours') ?? 24)));
   if (url.pathname === '/api/dividend-history') return json(await getDividendHistory(db));
+  if (url.pathname === '/api/exposure') return json(await getExposure(db, Number(url.searchParams.get('days') ?? 14)));
   if (url.pathname === '/api/export.csv') {
     const day = url.searchParams.get('day') ?? new Date().toISOString().slice(0, 10);
     try { return new Response(await exportDay(db, day), { headers: { 'Content-Type': 'text/csv;charset=utf-8', 'Content-Disposition': `attachment; filename="papertrade-${day}.csv"`, 'Cache-Control': 'no-store' } }); }
@@ -81,6 +83,9 @@ export async function runScheduled(event, db, { coreCollector = collect, auxilia
       const seed = previous ?? await latestSnapshot(db);
       const state = await auxiliaryCollector({ previous: seed, checkWeb: !seed?.web || start - seed.web.at >= 3600000 });
       await saveAuxiliary(db, state);
+      // Fill hour-boundary dividend indices missing from snapshots; a failure here never blocks the auxiliary state.
+      const index = await fillChainHourly(db).catch(error => ({ error: String(error.message ?? error).slice(0, 120) }));
+      logger.log(JSON.stringify({ type: 'chain-hourly', ...index }));
       logger.log(JSON.stringify({ type: 'collection-saved', kind, collectedAt: state.collectedAt, durationMs: Date.now() - start, failedSources: Object.keys(state.sources).filter(k => !state.sources[k].ok) }));
     } else {
       const snapshot = await coreCollector({ previous, auxiliary: false, deriveRisk: false });

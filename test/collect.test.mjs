@@ -57,6 +57,7 @@ for (const format of ['legacy', 'current']) test(`complete ${format} collection 
     else if (body?.type === 'metaAndAssetCtxs') payload = [{ universe: ['BTC', 'ETH', 'HYPE'].map(name => ({ name, szDecimals: 5, maxLeverage: 40 })), marginTables: [] }, [1, 2, 3].map(() => ({ midPx: '80000.5', markPx: '80000.5', oraclePx: '80000.5', funding: '.00001', openInterest: '10', dayNtlVlm: '1000' }))];
     else if (body?.type === 'l2Book') payload = { time: at, levels: [[{ px: '80000', sz: '10' }], [{ px: '80001', sz: '10' }]] };
     else if (body?.method === 'eth_getBlockByNumber') payload = { result: { number: '0x7b', timestamp: '0x' + Math.floor(at / 1000).toString(16) } };
+    else if (Array.isArray(body) && body[0]?.method === 'eth_blockNumber') payload = body.map(r => ({ id: r.id, result: r.id === 0 ? '0x7b' : '0x' + (5n * 10n ** 24n).toString(16).padStart(64, '0') }));
     else if (Array.isArray(body)) { seenBlocks.push(body[0].params[1]); batches++; payload = batches === 1 ? [{ id: 1, error: { message: 'Block temporarily unavailable' } }] : [{ id: 1, result: '0x' + (800000n).toString(16).padStart(64, '0') + (800010n).toString(16).padStart(64, '0') }]; }
     else throw new Error('Unexpected API request');
     return new Response(JSON.stringify(payload));

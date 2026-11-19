@@ -51,11 +51,40 @@ export async function getHistory(db, hours = 24, now = Date.now()) {
   const bounded = Math.min(2160, Math.max(1, Number.isFinite(hours) ? hours : 24));
   const bucket = Math.max(60000, Math.ceil(bounded * 60 / 1440) * 60000);
   const rows = await db.prepare(`SELECT ${historySelect} FROM snapshots WHERE collected_at IN (SELECT MAX(collected_at) FROM snapshots WHERE collected_at >= ? GROUP BY CAST(collected_at / ? AS INTEGER)) ORDER BY collected_at`).bind(now - bounded * 3600000, bucket).all();
-  return { hours: bounded, bucketMs: bucket, rows: rows.results ?? [] };
+  const out = rows.results ?? [];
+  // Buckets with no snapshot take the hourly on-chain row (0003 chain_hourly), marked source 'chain'; snapshot rows stay untouched.
+  const chain = await db.prepare('SELECT * FROM chain_hourly WHERE hour_at >= ? AND hour_at <= ? ORDER BY hour_at').bind(now - bounded * 3600000, now).all().catch(() => ({ results: [] }));
+  if (chain.results?.length) {
+    const covered = new Set(out.map(r => Math.floor(r.collected_at / bucket)));
+    const n = v => (v === null || v === undefined ? null : Number(BigInt(v)) / 1e18);
+    for (const c of chain.results) {
+      if (covered.has(Math.floor(c.block_at / bucket))) continue;
+      out.push({ collected_at: c.block_at, paper_source_at: c.block_at, paper_supply: n(c.paper_supply), staked_supply: n(c.staked_supply), pending_rewards: n(c.pending_rewards),
+        reward_accumulator: c.accumulator, lp_balance: n(c.lp_balance), source: 'chain', block: c.block });
+    }
+    out.sort((a, b) => a.collected_at - b.collected_at);
+  }
+  return { hours: bounded, bucketMs: bucket, rows: out };
 }
 
 // Small public response: exact index strings near hourly boundaries plus the latest
 // sample. No payload JSON extraction or synthetic filling of missing boundaries.
+// Recent exposure series for the chart, from stored minute snapshots: the first snapshot in each 15-minute bucket.
+// Columns match the long-history file built from the archive: [t, lp, tvl, btcLongOi, btcShortOi, ethLongOi, ethShortOi,
+// btcMid, ethMid, source (0 = snapshot), samples, traderUnrealizedPnl]. Instruments are read by symbol, not position.
+export async function getExposure(db, days = 14, now = Date.now()) {
+  const bounded = Math.min(14, Math.max(1, Number.isFinite(days) ? Math.floor(days) : 14)), bucket = 15 * 60000;
+  const leg = (i, f) => `CASE WHEN json_extract(payload, '$.trading.instruments[${i}].symbol') = '%S' THEN json_extract(payload, '$.trading.instruments[${i}].${f}') END`;
+  const pick = (sym, f) => `COALESCE(${leg(0, f).replace('%S', sym)}, ${leg(1, f).replace('%S', sym)})`;
+  const data = await db.prepare(`SELECT collected_at, lp_balance, json_extract(payload, '$.balances.tvl') AS tvl,
+      ${pick('BTC', 'longOi')} AS btc_long, ${pick('BTC', 'shortOi')} AS btc_short, ${pick('ETH', 'longOi')} AS eth_long, ${pick('ETH', 'shortOi')} AS eth_short,
+      btc_mid, eth_mid, CASE WHEN json_extract(payload, '$.sources.traderBook.ok') = 1 THEN json_extract(payload, '$.traderBook.unrealizedPnl') END AS upnl
+    FROM snapshots WHERE collected_at IN (SELECT MIN(collected_at) FROM snapshots WHERE collected_at >= ? GROUP BY CAST(collected_at / ? AS INTEGER)) ORDER BY collected_at`)
+    .bind(now - bounded * 86400000, bucket).all();
+  const points = (data.results ?? []).map(r => [Math.floor(r.collected_at / bucket) * bucket, r.lp_balance, r.tvl, r.btc_long, r.btc_short, r.eth_long, r.eth_short, r.btc_mid, r.eth_mid, 0, 1, r.upnl ?? null]);
+  return { version: 1, days: bounded, bucketMs: bucket, points };
+}
+
 export async function getDividendHistory(db, now = Date.now()) {
   const endAt = Math.floor(now / 3600000) * 3600000, from = endAt - 48 * 3600000 - 120000;
   const data = await db.prepare(`SELECT collected_at, reward_accumulator FROM snapshots
@@ -63,7 +92,14 @@ export async function getDividendHistory(db, now = Date.now()) {
     ((collected_at <= ? AND (collected_at % 3600000 <= 120000 OR collected_at % 3600000 >= 3480000))
       OR collected_at = (SELECT MAX(collected_at) FROM snapshots))
     ORDER BY collected_at LIMIT 246`).bind(from, now, endAt + 120000).all();
-  return { hours: 48, endAt, boundaryToleranceMs: 120000, rows: data.results ?? [] };
+  const rows = [...(data.results ?? [])]; // snapshot rows stay compact; only chain-filled rows carry source and block
+  // Hours without a stored snapshot use the staking contract's accumulator read at that hour's block (0003 chain_hourly).
+  const chain = await db.prepare('SELECT block_at AS collected_at, accumulator AS reward_accumulator, block FROM chain_hourly WHERE hour_at >= ? AND hour_at <= ? AND accumulator IS NOT NULL ORDER BY hour_at')
+    .bind(from, endAt).all().catch(() => ({ results: [] }));
+  const covered = new Set(rows.map(r => Math.round(r.collected_at / 3600000)));
+  for (const r of chain.results ?? []) if (!covered.has(Math.round(r.collected_at / 3600000))) rows.push({ ...r, source: 'chain' });
+  rows.sort((a, b) => a.collected_at - b.collected_at);
+  return { hours: 48, endAt, boundaryToleranceMs: 120000, rows };
 }
 
 // D1 只是近期缓存：完整分钟数据由首尔服务器拉取归档（papertrade-monitor-data）。
