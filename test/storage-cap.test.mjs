@@ -39,3 +39,12 @@ test('public JSON responses allow cross-origin reads', async () => {
   const response = await api(new Request('https://test/api/health'), database());
   assert.equal(response.headers.get('Access-Control-Allow-Origin'), '*');
 });
+
+test('archive pages report the row count between the cursor and the upper bound', async () => {
+  const { exportSnapshots } = await import('../src/storage.mjs');
+  const db = database(), start = Date.parse('2026-11-19T00:00:00Z');
+  for (let i = 0; i < 5; i++) await saveSnapshot(db, { collectedAt: start + i * 60000, markets: [], sources: {} });
+  const page = await exportSnapshots(db, { after: start + 60000, through: start + 3 * 60000, limit: 1 });
+  assert.deepEqual(page.window, { after: start + 60000, count: 2 });
+  assert.equal(page.available.count, 4);
+});

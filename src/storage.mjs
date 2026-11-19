@@ -41,7 +41,9 @@ export async function exportSnapshots(db, { after = 0, through = Date.now(), lim
   const data = await db.prepare('SELECT collected_at, payload FROM snapshots WHERE collected_at > ? AND collected_at <= ? ORDER BY collected_at LIMIT ?').bind(after, through, limit + 1).all();
   const selected = (data.results ?? []).slice(0, limit);
   const available = await db.prepare('SELECT MIN(collected_at) AS oldestAt, MAX(collected_at) AS latestAt, COUNT(*) AS count FROM snapshots WHERE collected_at <= ?').bind(through).first();
-  return { version: 1, through, available, rows: selected.map(r => ({ collectedAt: r.collected_at, snapshot: JSON.parse(r.payload) })),
+  // 本页游标之后到 through 的行数。D1 抽稀后总数不再等于归档条数，归档端用首页的 window 校验分页是否拉全。
+  const window = { after, count: (await db.prepare('SELECT COUNT(*) AS count FROM snapshots WHERE collected_at > ? AND collected_at <= ?').bind(after, through).first())?.count ?? null };
+  return { version: 1, through, available, window, rows: selected.map(r => ({ collectedAt: r.collected_at, snapshot: JSON.parse(r.payload) })),
     nextAfter: selected.at(-1)?.collected_at ?? after, complete: (data.results ?? []).length <= limit };
 }
 
