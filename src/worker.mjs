@@ -13,7 +13,8 @@ export async function liveSnapshot({ collector = collect, deadlineMs = 20000 } =
   try { const snapshot = await Promise.race([collector(), timeout]); hot = snapshot; return snapshot; }
   finally { clearTimeout(timer); }
 }
-const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
+// 全部是公开只读数据且只接受 GET（无凭据），允许任意来源读取，供 juiceless.cn 看板卡片跨域取数。
+const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' } });
 
 export async function api(request, db) {
   const url = new URL(request.url);

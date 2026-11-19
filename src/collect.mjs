@@ -109,6 +109,9 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
   result.sources.jumps = { ok: false, at: null, disabled: true, reason: '已停用 Binance 秒级数据采集' };
   // 治理扫描失败时沿用上一条记录的游标和已知操作，并标记为过期；不当作“没有新排程”。
   result.governance = values.governance ?? (previous?.governance ? { ...previous.governance, stale: auxiliary ? true : previous.governance.stale ?? false } : null);
+  // 分钟行只留治理摘要：完整的 recentEvents/gaps 在 auxiliary_state，读取时由 attachAuxiliary 补回。
+  // 每分钟重复整份治理扫描会让单行翻倍，D1 免费版 500MB 会在约两周内写满（2026-10-27 已发生）。
+  if (!auxiliary && result.governance) { const { recentEvents, gaps, ...summary } = result.governance; result.governance = summary; }
   if (!auxiliary) for (const key of ['protocolHistory', 'governance', 'web']) {
     if (previous?.sources?.[key]) result.sources[key] = { ...previous.sources[key], retained: true };
   }

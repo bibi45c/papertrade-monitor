@@ -64,8 +64,14 @@ export async function getDividendHistory(db, now = Date.now()) {
   return { hours: 48, endAt, boundaryToleranceMs: 120000, rows: data.results ?? [] };
 }
 
+// D1 只是近期缓存：完整分钟数据由首尔服务器拉取归档（papertrade-monitor-data）。
+// 分钟行保留 14 天；更早的每个 UTC 小时只留第一行，保证 90 天历史图仍可画；超过 90 天全部删除。
+export const MINUTE_RETENTION_DAYS = 14, HOURLY_RETENTION_DAYS = 90;
 export async function purgeExpired(db, now) {
-  await db.prepare('DELETE FROM snapshots WHERE collected_at < ?').bind(now - 90 * 86400000).run();
+  const minuteCutoff = now - MINUTE_RETENTION_DAYS * 86400000;
+  await db.prepare('DELETE FROM snapshots WHERE collected_at < ?').bind(now - HOURLY_RETENTION_DAYS * 86400000).run();
+  await db.prepare(`DELETE FROM snapshots WHERE collected_at < ?1 AND collected_at NOT IN
+    (SELECT MIN(collected_at) FROM snapshots WHERE collected_at < ?1 GROUP BY collected_at / 3600000)`).bind(minuteCutoff).run();
 }
 
 export async function exportDay(db, day) {
