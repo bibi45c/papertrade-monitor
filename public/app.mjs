@@ -91,8 +91,11 @@ const SERIES_URL = 'https://raw.githubusercontent.com/bibi45c/papertrade-monitor
 async function loadExposure() {
   const get = async url => { try { const r = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(20000) }); return r.ok ? await r.json() : null; } catch { return null; } };
   const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname);
-  const [local, recent] = await Promise.all([isLocal ? get('/exposure-series.json') : null, get('/api/exposure?days=14')]);
-  exposureSeries = mergeSeries(local ?? await get(SERIES_URL), recent);
+  const history = (isLocal ? await get('/exposure-series.json') : null) ?? await get(SERIES_URL);
+  // Only the part the daily file lacks, rounded to the hour so viewers share the edge-cached response.
+  const since = history?.points?.length ? Math.floor(history.points.at(-1)[0] / 3600000) * 3600000 : null;
+  const recent = await get('/api/exposure?days=14' + (since ? '&since=' + since : ''));
+  exposureSeries = mergeSeries(history, recent);
   drawExposure();
 }
 function renderRisk() {
@@ -249,5 +252,5 @@ $('copyPlan').addEventListener('click', async () => {
 showProfitCache();
 await Promise.all([refresh(), refreshHistory(), loadExposure()]);
 setInterval(loadExposure, 10 * 60000);
-setInterval(refresh, 10000); setInterval(refreshHistory, 60000);
+setInterval(refresh, 10000); setInterval(refreshHistory, 5 * 60000);
 setInterval(() => { if (snapshot) render(); }, 5000);

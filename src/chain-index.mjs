@@ -29,8 +29,9 @@ async function batch(fetcher, requests) {
 // Complete hours since `from` with neither a stored snapshot within ±2 minutes of the hour nor a chain row.
 export async function missingHours(db, now, from = CHAIN_FROM) {
   const end = Math.floor(now / HOUR) * HOUR, have = new Set();
-  const snaps = await db.prepare(`SELECT collected_at FROM snapshots WHERE collected_at >= ? AND collected_at <= ? AND reward_accumulator IS NOT NULL
-    AND (collected_at % 3600000 <= ${TOLERANCE} OR collected_at % 3600000 >= ${HOUR - TOLERANCE})`).bind(from - TOLERANCE, end + TOLERANCE).all();
+  // Index range lookups around each hour boundary (reads a few rows per hour, not every stored minute).
+  const snaps = await db.prepare(`WITH RECURSIVE hours(h) AS (SELECT ?1 UNION ALL SELECT h + ${HOUR} FROM hours WHERE h + ${HOUR} <= ?2)
+    SELECT s.collected_at FROM hours JOIN snapshots s ON s.collected_at BETWEEN hours.h - ${TOLERANCE} AND hours.h + ${TOLERANCE} WHERE s.reward_accumulator IS NOT NULL`).bind(from, end).all();
   for (const r of snaps.results ?? []) have.add(Math.round(r.collected_at / HOUR) * HOUR);
   const chain = await db.prepare('SELECT hour_at FROM chain_hourly WHERE hour_at >= ? AND hour_at <= ?').bind(from, end).all();
   for (const r of chain.results ?? []) have.add(r.hour_at);

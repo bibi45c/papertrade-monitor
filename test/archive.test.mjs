@@ -15,7 +15,9 @@ test('archive pages preserve exact payloads and failures without holes or duplic
     original.push(s); await saveSnapshot(db, s);
   }
   const rows = []; let after = 0;
-  for (;;) { const page = await exportSnapshots(db, { after, through: start + 4 * 60000, limit: 2 }); rows.push(...page.rows); after = page.nextAfter; assert.equal(page.available.count, 5); if (page.complete) break; }
+  for (let first = true; ; first = false) { const page = await exportSnapshots(db, { after, through: start + 4 * 60000, limit: 2, withWindow: first }); rows.push(...page.rows); after = page.nextAfter;
+    // Bounds come from index lookups; the full-table count is never computed, and the window only on request.
+    assert.equal(page.available.oldestAt, start); assert.equal(page.available.count, null); assert.equal('window' in page, first); if (first) assert.equal(page.window.count, 5); if (page.complete) break; }
   assert.equal(rows.length, 5); assert.equal(new Set(rows.map(r => r.collectedAt)).size, 5);
   assert.deepEqual(rows.map(r => r.snapshot), original);
   assert.equal((await exportSnapshots(db, { after, through: start + 4 * 60000 })).rows.length, 0);

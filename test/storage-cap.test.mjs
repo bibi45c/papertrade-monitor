@@ -44,9 +44,10 @@ test('archive pages report the row count between the cursor and the upper bound'
   const { exportSnapshots } = await import('../src/storage.mjs');
   const db = database(), start = Date.parse('2026-11-19T00:00:00Z');
   for (let i = 0; i < 5; i++) await saveSnapshot(db, { collectedAt: start + i * 60000, markets: [], sources: {} });
-  const page = await exportSnapshots(db, { after: start + 60000, through: start + 3 * 60000, limit: 1 });
+  const page = await exportSnapshots(db, { after: start + 60000, through: start + 3 * 60000, limit: 1, withWindow: true });
   assert.deepEqual(page.window, { after: start + 60000, count: 2 });
-  assert.equal(page.available.count, 4);
+  assert.deepEqual(page.available, { oldestAt: start, latestAt: start + 3 * 60000, count: null });
+  assert.equal('window' in await exportSnapshots(db, { after: start + 60000, through: start + 3 * 60000, limit: 1 }), false);
 });
 
 test('chain hours fill dividend history and history buckets without snapshots, never replacing a snapshot', async () => {
@@ -66,9 +67,11 @@ test('exposure endpoint returns the first snapshot per 15 minutes with legs matc
   const snap = (at, swap) => ({ collectedAt: at, markets: [{ coin: 'BTC', mid: 60000 }, { coin: 'ETH', mid: 2000 }], sources: { traderBook: { ok: true } }, traderBook: { unrealizedPnl: -5 },
     balances: { lp: 4.9e6, tvl: 2e7 }, trading: { instruments: swap ? [{ symbol: 'ETH', longOi: 3, shortOi: 4 }, { symbol: 'BTC', longOi: 1, shortOi: 2 }] : [{ symbol: 'BTC', longOi: 1, shortOi: 2 }, { symbol: 'ETH', longOi: 3, shortOi: 4 }] } });
   for (const [m, swap] of [[0, false], [5, false], [15, true]]) await saveSnapshot(db, snap(now - 60 * 60000 + m * 60000, swap));
-  const res = await api(new Request('https://test/api/exposure?days=1'), db);
+  const res = await api(new Request('https://test/api/exposure?days=14'), db);
   assert.equal(res.headers.get('Access-Control-Allow-Origin'), '*');
-  const { points } = await res.json();
+  const { getExposure } = await import('../src/storage.mjs');
+  const { points } = await getExposure(db, 1, now);
   assert.equal(points.length, 2);
+  assert.equal((await getExposure(db, 1, now, now - 50 * 60000)).points.length, 1); // since skips older buckets
   assert.deepEqual(points[1].slice(1, 9), [4.9e6, 2e7, 1, 2, 3, 4, 60000, 2000]); assert.equal(points[1][11], -5);
 });

@@ -36,14 +36,18 @@ export async function saveAuxiliary(db, state) {
 
 // Full stored payloads, without aggregation or numeric conversion. Bounded pages
 // allow the archive to keep exact raw strings and source failure information.
-export async function exportSnapshots(db, { after = 0, through = Date.now(), limit = 120 } = {}) {
+// D1 free plan allows 5M rows read per day. A page reads only its own rows; bounds use index-only MIN/MAX lookups.
+// The window count (rows after the cursor up to `through`) is computed only when the caller asks for it, which the
+// archiver does on its first page; the full-table count is never computed per page.
+export async function exportSnapshots(db, { after = 0, through = Date.now(), limit = 120, withWindow = false } = {}) {
   if (![after, through, limit].every(Number.isSafeInteger) || after < 0 || through < after || limit < 1 || limit > 120) throw new RangeError('Invalid archive cursor, upper bound or limit (1-120)');
   const data = await db.prepare('SELECT collected_at, payload FROM snapshots WHERE collected_at > ? AND collected_at <= ? ORDER BY collected_at LIMIT ?').bind(after, through, limit + 1).all();
   const selected = (data.results ?? []).slice(0, limit);
-  const available = await db.prepare('SELECT MIN(collected_at) AS oldestAt, MAX(collected_at) AS latestAt, COUNT(*) AS count FROM snapshots WHERE collected_at <= ?').bind(through).first();
+  const bounds = await db.prepare('SELECT (SELECT MIN(collected_at) FROM snapshots) AS oldestAt, (SELECT MAX(collected_at) FROM snapshots WHERE collected_at <= ?) AS latestAt').bind(through).first();
+  const available = { oldestAt: bounds?.oldestAt ?? null, latestAt: bounds?.latestAt ?? null, count: null };
   // 本页游标之后到 through 的行数。D1 抽稀后总数不再等于归档条数，归档端用首页的 window 校验分页是否拉全。
-  const window = { after, count: (await db.prepare('SELECT COUNT(*) AS count FROM snapshots WHERE collected_at > ? AND collected_at <= ?').bind(after, through).first())?.count ?? null };
-  return { version: 1, through, available, window, rows: selected.map(r => ({ collectedAt: r.collected_at, snapshot: JSON.parse(r.payload) })),
+  const window = withWindow ? { after, count: (await db.prepare('SELECT COUNT(*) AS count FROM snapshots WHERE collected_at > ? AND collected_at <= ?').bind(after, through).first())?.count ?? null } : null;
+  return { version: 1, through, available, ...(window ? { window } : {}), rows: selected.map(r => ({ collectedAt: r.collected_at, snapshot: JSON.parse(r.payload) })),
     nextAfter: selected.at(-1)?.collected_at ?? after, complete: (data.results ?? []).length <= limit };
 }
 
@@ -72,26 +76,28 @@ export async function getHistory(db, hours = 24, now = Date.now()) {
 // Recent exposure series for the chart, from stored minute snapshots: the first snapshot in each 15-minute bucket.
 // Columns match the long-history file built from the archive: [t, lp, tvl, btcLongOi, btcShortOi, ethLongOi, ethShortOi,
 // btcMid, ethMid, source (0 = snapshot), samples, traderUnrealizedPnl]. Instruments are read by symbol, not position.
-export async function getExposure(db, days = 14, now = Date.now()) {
+export async function getExposure(db, days = 14, now = Date.now(), since = null) {
   const bounded = Math.min(14, Math.max(1, Number.isFinite(days) ? Math.floor(days) : 14)), bucket = 15 * 60000;
+  const from = Math.max(now - bounded * 86400000, Number.isSafeInteger(since) ? since : 0);
   const leg = (i, f) => `CASE WHEN json_extract(payload, '$.trading.instruments[${i}].symbol') = '%S' THEN json_extract(payload, '$.trading.instruments[${i}].${f}') END`;
   const pick = (sym, f) => `COALESCE(${leg(0, f).replace('%S', sym)}, ${leg(1, f).replace('%S', sym)})`;
   const data = await db.prepare(`SELECT collected_at, lp_balance, json_extract(payload, '$.balances.tvl') AS tvl,
       ${pick('BTC', 'longOi')} AS btc_long, ${pick('BTC', 'shortOi')} AS btc_short, ${pick('ETH', 'longOi')} AS eth_long, ${pick('ETH', 'shortOi')} AS eth_short,
       btc_mid, eth_mid, CASE WHEN json_extract(payload, '$.sources.traderBook.ok') = 1 THEN json_extract(payload, '$.traderBook.unrealizedPnl') END AS upnl
     FROM snapshots WHERE collected_at IN (SELECT MIN(collected_at) FROM snapshots WHERE collected_at >= ? GROUP BY CAST(collected_at / ? AS INTEGER)) ORDER BY collected_at`)
-    .bind(now - bounded * 86400000, bucket).all();
+    .bind(from, bucket).all();
   const points = (data.results ?? []).map(r => [Math.floor(r.collected_at / bucket) * bucket, r.lp_balance, r.tvl, r.btc_long, r.btc_short, r.eth_long, r.eth_short, r.btc_mid, r.eth_mid, 0, 1, r.upnl ?? null]);
   return { version: 1, days: bounded, bucketMs: bucket, points };
 }
 
 export async function getDividendHistory(db, now = Date.now()) {
   const endAt = Math.floor(now / 3600000) * 3600000, from = endAt - 48 * 3600000 - 120000;
-  const data = await db.prepare(`SELECT collected_at, reward_accumulator FROM snapshots
-    WHERE collected_at >= ? AND collected_at <= ? AND
-    ((collected_at <= ? AND (collected_at % 3600000 <= 120000 OR collected_at % 3600000 >= 3480000))
-      OR collected_at = (SELECT MAX(collected_at) FROM snapshots))
-    ORDER BY collected_at LIMIT 246`).bind(from, now, endAt + 120000).all();
+  // One index range lookup per hour boundary (±2 min), plus the latest row: ~250 rows read instead of a 48-hour scan.
+  const data = await db.prepare(`WITH RECURSIVE hours(h) AS (SELECT ?1 UNION ALL SELECT h + 3600000 FROM hours WHERE h + 3600000 <= ?2)
+    SELECT collected_at, reward_accumulator FROM (
+      SELECT s.collected_at, s.reward_accumulator FROM hours JOIN snapshots s ON s.collected_at BETWEEN hours.h - 120000 AND hours.h + 120000
+      UNION SELECT collected_at, reward_accumulator FROM snapshots WHERE collected_at = (SELECT MAX(collected_at) FROM snapshots))
+    WHERE collected_at >= ?3 AND collected_at <= ?4 ORDER BY collected_at LIMIT 246`).bind(endAt - 48 * 3600000, endAt, from, now).all();
   const rows = [...(data.results ?? [])]; // snapshot rows stay compact; only chain-filled rows carry source and block
   // Hours without a stored snapshot use the staking contract's accumulator read at that hour's block (0003 chain_hourly).
   const chain = await db.prepare('SELECT block_at AS collected_at, accumulator AS reward_accumulator, block FROM chain_hourly WHERE hour_at >= ? AND hour_at <= ? AND accumulator IS NOT NULL ORDER BY hour_at')

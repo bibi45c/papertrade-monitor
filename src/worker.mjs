@@ -17,6 +17,15 @@ export async function liveSnapshot({ collector = collect, deadlineMs = 20000 } =
 // 全部是公开只读数据且只接受 GET（无凭据），允许任意来源读取，供 juiceless.cn 看板卡片跨域取数。
 const json = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' } });
 
+async function cached(request, seconds, produce) {
+  const cache = globalThis.caches?.default;
+  if (cache) { const hit = await cache.match(request).catch(() => null); if (hit) return hit; }
+  const value = await produce();
+  const response = Response.json(value, { headers: { 'Cache-Control': `public, max-age=${seconds}`, 'X-Content-Type-Options': 'nosniff', 'Access-Control-Allow-Origin': '*' } });
+  if (cache) await cache.put(request, response.clone()).catch(() => {});
+  return response;
+}
+
 export async function api(request, db) {
   const url = new URL(request.url);
   if (request.method !== 'GET') return json({ error: 'Only GET requests are accepted' }, 405);
@@ -32,12 +41,13 @@ export async function api(request, db) {
   if (url.pathname === '/api/latest') return json({ snapshot: attachAuxiliary(await latestSnapshot(db), await loadAuxiliary(db).catch(() => null)) });
   if (url.pathname === '/api/archive') {
     const integerParam = (name, fallback) => { const value = url.searchParams.get(name); return value === null ? fallback : /^\d+$/.test(value) ? Number(value) : NaN; };
-    try { return json(await exportSnapshots(db, { after: integerParam('after', 0), through: integerParam('through', Date.now()), limit: integerParam('limit', 120) })); }
+    try { return json(await exportSnapshots(db, { after: integerParam('after', 0), through: integerParam('through', Date.now()), limit: integerParam('limit', 120), withWindow: url.searchParams.get('window') === '1' })); }
     catch (error) { if (error instanceof RangeError) return json({ error: error.message }, 400); throw error; }
   }
-  if (url.pathname === '/api/history') return json(await getHistory(db, Number(url.searchParams.get('hours') ?? 24)));
-  if (url.pathname === '/api/dividend-history') return json(await getDividendHistory(db));
-  if (url.pathname === '/api/exposure') return json(await getExposure(db, Number(url.searchParams.get('days') ?? 14)));
+  // Shared edge cache for the read-heavy history endpoints: every viewer within the TTL reuses one D1 read.
+  if (url.pathname === '/api/history') return cached(request, 60, () => getHistory(db, Number(url.searchParams.get('hours') ?? 24)));
+  if (url.pathname === '/api/dividend-history') return cached(request, 300, () => getDividendHistory(db));
+  if (url.pathname === '/api/exposure') { const since = url.searchParams.get('since'); return cached(request, 600, () => getExposure(db, Number(url.searchParams.get('days') ?? 14), Date.now(), since !== null && /^\d+$/.test(since) ? Number(since) : null)); }
   if (url.pathname === '/api/export.csv') {
     const day = url.searchParams.get('day') ?? new Date().toISOString().slice(0, 10);
     try { return new Response(await exportDay(db, day), { headers: { 'Content-Type': 'text/csv;charset=utf-8', 'Content-Disposition': `attachment; filename="papertrade-${day}.csv"`, 'Cache-Control': 'no-store' } }); }
@@ -84,8 +94,11 @@ export async function runScheduled(event, db, { coreCollector = collect, auxilia
       const state = await auxiliaryCollector({ previous: seed, checkWeb: !seed?.web || start - seed.web.at >= 3600000 });
       await saveAuxiliary(db, state);
       // Fill hour-boundary dividend indices missing from snapshots; a failure here never blocks the auxiliary state.
-      const index = await fillChainHourly(db).catch(error => ({ error: String(error.message ?? error).slice(0, 120) }));
-      logger.log(JSON.stringify({ type: 'chain-hourly', ...index }));
+      // Once an hour (first auxiliary run after the hour) is enough for hour-boundary rows and keeps D1 reads low.
+      if (new Date(event.scheduledTime).getUTCMinutes() < 5) {
+        const index = await fillChainHourly(db, { maxHours: 96 }).catch(error => ({ error: String(error.message ?? error).slice(0, 120) }));
+        logger.log(JSON.stringify({ type: 'chain-hourly', ...index }));
+      }
       logger.log(JSON.stringify({ type: 'collection-saved', kind, collectedAt: state.collectedAt, durationMs: Date.now() - start, failedSources: Object.keys(state.sources).filter(k => !state.sources[k].ok) }));
     } else {
       const snapshot = await coreCollector({ previous, auxiliary: false, deriveRisk: false });
