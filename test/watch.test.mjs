@@ -100,6 +100,12 @@ test('nested scheduling stops at depth two and handles short or malformed callda
   }
 });
 
+test('a batch inside a batch is not expanded, so one event cannot multiply the stored state', () => {
+  const [inner] = describeCall(GOVERNANCE.timelock, singleBatch(singleBatch('deadbeef'))).batch;
+  assert.equal(inner.selector, '8b07f62b');
+  assert.equal(Object.hasOwn(inner, 'batch'), false);
+});
+
 test('legacy batch size is inferred only from a matching selector and plausible ABI arguments', () => {
   const args = ['128', '352', '576', '0', '6'];
   const old = { selector: '8b07f62b', label: '未知函数 0x8b07f62b', args };
@@ -253,6 +259,46 @@ test('a new schedule after cancellation clears the ending and older rescans keep
 
   const rescanned = await scanLogs([atBlock(scheduled, 10), oldCancellation], 32, { ...pending, gaps: [[10, 20]] });
   assert.deepEqual(rescanned.operations, pending.operations);
+});
+
+test('events in one block follow their log order', async () => {
+  const at = (log, block, logIndex) => ({ ...atBlock(log, block), logIndex: '0x' + logIndex.toString(16) });
+  const initial = { lastScannedBlock: 10, operations: [{ ...KNOWN_OPERATIONS[0], scheduledBlock: 10 }] };
+  const logs = [at(cancelled, 25, 0), at(scheduled, 25, 1)];
+  const pending = await scanLogs(logs, 30, initial);
+  assert.equal(pending.operations[0].scheduledBlock, 25);
+  for (const field of ['resolvedBlock', 'resolvedTopic', 'resolvedLogIndex', 'outcome']) assert.equal(Object.hasOwn(pending.operations[0], field), false);
+  // Rescanning the same block, or only the older cancellation, must not resolve it again.
+  for (const again of [logs, [logs[0]], [...logs].reverse()]) {
+    const state = await scanLogs(again, 31, { ...pending, gaps: [[25, 25]] });
+    assert.deepEqual(state.operations, pending.operations);
+  }
+  const resolved = await scanLogs([at(scheduled, 25, 0), at(cancelled, 25, 1)], 30, initial);
+  assert.equal(resolved.operations[0].outcome, 'cancelled');
+  const unresolved = await scanLogs([at(scheduled, 25, 0)], 31, { ...resolved, gaps: [[25, 25]] });
+  assert.deepEqual(unresolved.operations, resolved.operations);
+});
+
+test('an unrecognised event in the same block never downgrades a known outcome', async () => {
+  const id = operationExecuted.topics[1], unknown = { ...cancelled, topics: ['0x' + 'aa'.repeat(32), id] };
+  const previous = { lastScannedBlock: 10, operations: [{ id, scheduledBlock: 10 }] };
+  for (const logs of [[operationExecuted, unknown], [unknown, operationExecuted]]) {
+    const indexed = logs.map((l, i) => ({ ...atBlock(l, 25), logIndex: '0x' + i }));
+    for (const order of [indexed, [...indexed].reverse()]) {
+      const state = await scanLogs(order, 30, previous);
+      assert.equal(state.operations[0].outcome, 'executed');
+      assert.equal(state.operations[0].resolvedTopic, operationExecuted.topics[0]);
+    }
+  }
+  const legacy = { lastScannedBlock: 30, operations: [{ id, scheduledBlock: 10, resolvedBlock: 25, resolvedTopic: operationExecuted.topics[0] }], gaps: [[25, 25]] };
+  const kept = await scanLogs([atBlock(unknown, 25)], 31, legacy);
+  assert.equal(kept.operations[0].resolvedTopic, operationExecuted.topics[0]);
+});
+
+test('rescanned events replace older stored ones', async () => {
+  const id = operationExecuted.topics[1], log = atBlock(operationExecuted, 25);
+  const state = await scanLogs([log], 31, { lastScannedBlock: 30, gaps: [[25, 25]], operations: [], recentEvents: [{ kind: 'unknown', tx: log.transactionHash, topic0: log.topics[0], topic1: id, block: 25 }] });
+  assert.deepEqual(state.recentEvents.map(e => e.kind), ['operationExecuted']);
 });
 
 test('a malformed batch log still allows its block range to be marked covered', async () => {

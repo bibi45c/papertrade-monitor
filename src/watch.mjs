@@ -120,13 +120,14 @@ function describeBatch(body, depth) {
     if (!/^0{24}[\da-f]{40}$/i.test(address) || data === null) return null;
     calls.push({ target: toAddress(address), offset, data });
   }
+  // A batch inside a batch is never expanded: 64 × 64 calls would exceed D1's row limit.
   // Shared or overlapping payloads could multiply the decoded tree written to D1.
   let end = count * 64;
   for (const { offset, data } of [...calls].sort((a, b) => a.offset - b.offset)) {
     if (offset < end) return null;
     end = offset + 64 + Math.ceil(data.length / 64) * 64;
   }
-  return calls.map(({ target, data }) => ({ target, ...describeNestedCall(target, data, depth + 1, true) }));
+  return calls.map(({ target, data }) => ({ target, ...describeNestedCall(target, data, depth + 1, false) }));
 }
 
 export function describeCall(target, data) {
@@ -164,7 +165,7 @@ function describeNestedCall(target, data, depth, includeBatch) {
 export function decodeScheduled(log) {
   const d = log.data.slice(2), len = Number(big(word(d, 4))), calldata = d.slice(5 * 64, 5 * 64 + len * 2);
   const target = toAddress(log.topics[2].slice(2));
-  return { id: log.topics[1], target, readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeNestedCall(target, calldata, 0, false) };
+  return { id: log.topics[1], target, ...(log.logIndex === undefined ? {} : { scheduledLogIndex: Number(BigInt(log.logIndex)) }), readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeNestedCall(target, calldata, 0, false) };
 }
 
 export function decodeLog(log) {
@@ -182,7 +183,7 @@ export function decodeLog(log) {
     const data = abiBytes(d, abiOffset(d, 64, 2 * 64));
     if (target && data?.length >= 8) call = { target, ...describeCall(target, data) };
   }
-  return { kind, address, topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), tx: log.transactionHash, call };
+  return { kind, address, topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), ...(log.logIndex === undefined ? {} : { logIndex: Number(BigInt(log.logIndex)) }), tx: log.transactionHash, call };
 }
 
 export function mergeBlockRanges(ranges) {
@@ -239,23 +240,30 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
     if (!await read(start, end)) break;
   }
   const ops = new Map((previous?.operations ?? KNOWN_OPERATIONS).map(o => [o.id, o]));
+  // Schedules first, then endings; within one block the log index decides (older stored records have none).
+  const before = (block, index, otherBlock, otherIndex) => block < otherBlock || (block === otherBlock && index < otherIndex);
   for (const e of events) {
     if (e.kind !== 'scheduled') continue;
     const old = ops.get(e.id);
-    if (e.scheduledBlock < old?.scheduledBlock) continue;
+    if (before(e.scheduledBlock, e.scheduledLogIndex, old?.scheduledBlock, old?.scheduledLogIndex)) continue;
     const op = { ...old, ...e };
-    if (op.scheduledBlock > op.resolvedBlock) {
-      delete op.resolvedBlock;
-      delete op.resolvedTopic;
-      delete op.outcome;
+    if (before(op.resolvedBlock, op.resolvedLogIndex, op.scheduledBlock, op.scheduledLogIndex)) {
+      for (const field of ['resolvedBlock', 'resolvedLogIndex', 'resolvedTopic', 'outcome']) delete op[field];
     }
     ops.set(e.id, op);
   }
+  const known = [TOPICS.operationExecuted, TOPICS.operationCancelled];
   for (const e of events) {
     if (e.address !== GOVERNANCE.timelock || !['operationExecuted', 'operationCancelled', 'unknown'].includes(e.kind)) continue;
     const old = ops.get(e.topic1);
-    if (!old || e.block < old.scheduledBlock || e.block < old.resolvedBlock) continue;
+    if (!old || before(e.block, e.logIndex, old.scheduledBlock, old.scheduledLogIndex)) continue;
+    // In one block a known ending beats an unrecognised event whatever their order; otherwise the later event wins.
+    const sameBlock = e.block === old.resolvedBlock, oldKnown = known.includes(old.resolvedTopic);
+    if (sameBlock && e.kind === 'unknown' && oldKnown) continue;
+    const upgrades = sameBlock && e.kind !== 'unknown' && !oldKnown;
+    if (!upgrades && before(e.block, e.logIndex, old.resolvedBlock, old.resolvedLogIndex)) continue;
     const op = { ...old, resolvedBlock: e.block, resolvedTopic: e.topic0 };
+    if (e.logIndex === undefined) delete op.resolvedLogIndex; else op.resolvedLogIndex = e.logIndex;
     if (e.kind === 'unknown') delete op.outcome;
     else op.outcome = e.kind === 'operationExecuted' ? 'executed' : 'cancelled';
     ops.set(e.topic1, op);

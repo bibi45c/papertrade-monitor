@@ -48,7 +48,7 @@ function batchDetails(batch, L, lang) {
       const builders = calls.map(builderAddress).filter(Boolean);
       const shown = builders.slice(0, remaining), extra = builders.length - shown.length;
       shown.forEach((addr, i) => parts.push(i ? ', ' : ' ', link('address/' + addr, short(addr), addr)));
-      if (extra) parts.push(L(` 等 ${extra} 个`, ` and ${extra} more`));
+      if (extra) parts.push(shown.length ? L(` 等 ${extra} 个`, ` and ${extra} more`) : L('（地址见交易）', ' (addresses in the transaction)'));
       remaining -= shown.length;
     }
     const targetLabel = where && where !== target ? translateMessage(where, lang) : short(target);
@@ -68,7 +68,7 @@ function multisigAlert(e, L, lang) {
     const operations = size === 1 ? 'operation' : 'operations';
     title = `${verb}${sep}${size ? L(`批量排程 ${size} 项`, `batch schedule of ${size} ${operations}`) : L('批量排程', 'batch schedule')}`;
     if (c.batch?.length) parts.push(...batchDetails(c.batch, L, lang));
-    else parts.push(size ? L(`共 ${size} 项，旧记录未存明细，见交易`, `${size} ${operations}; details not stored for this older record, see the transaction`) : L('旧记录未存明细，见交易', 'Details not stored for this older record, see the transaction'));
+    else parts.push(size ? L(`共 ${size} 项，明细未存或未能解出，见交易`, `${size} ${operations}; details not stored or not decoded, see the transaction`) : L('明细未存或未能解出，见交易', 'Details not stored or not decoded, see the transaction'));
   } else if (['a9059cbb', '095ea7b3'].includes(c?.selector) && TOKENS[c.target]) {
     const to = c.display?.[0] ?? '', amount = c.display?.[1] ?? '', approve = c.selector === '095ea7b3';
     title = `${verb}${sep}${approve ? L('授权', 'approval of') : L('转出', 'transfer of')} ${amount}`;

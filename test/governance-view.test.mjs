@@ -71,19 +71,26 @@ test('batch alerts separate targets, limit builder links and prefer the multisig
   assert.equal(alert.title, 'Multisig executed: batch schedule of 8 operations');
   assert.ok(alert.parts.includes('Approve Hyperliquid builder approveBuilder(address) ×6'));
   assert.ok(alert.parts.includes('Approve Hyperliquid builder approveBuilder(address) ×2'));
-  assert.ok(alert.parts.includes(' and 2 more'));
+  assert.ok(alert.parts.includes(' (addresses in the transaction)'));
+  assert.ok(!alert.parts.some(p => / more$/.test(p)));
   assert.ok(!alert.parts.includes(' · no execution seen in scanned logs'));
   assert.equal(alert.parts.filter(p => p.href?.includes('/address/')).length, 8);
   assert.ok(alert.parts.some(p => p.textContent === 'Timelock (1-day minimum delay)'));
+});
+
+test('builder links beyond the first six are counted', t => {
+  const build = alerts(t);
+  const [alert] = build([{ ...event, call: { ...call, batch: [...call.batch, ...call.batch.slice(0, 2)] } }], 'en');
+  assert.ok(alert.parts.includes(' and 2 more'));
 });
 
 test('older batch alerts show the inferred count or omit it and keep the transaction link', t => {
   const build = alerts(t);
   const [zh] = build([{ ...event, call: relabelCall({ selector: call.selector, args: call.args }) }], 'zh');
   assert.equal(zh.title, '多签提交：批量排程 6 项');
-  assert.equal(zh.parts[0], '共 6 项，旧记录未存明细，见交易');
+  assert.equal(zh.parts[0], '共 6 项，明细未存或未能解出，见交易');
   const [en] = build([{ ...event, call: relabelCall({ selector: call.selector, args: call.args }) }], 'en');
-  assert.equal(en.parts[0], '6 operations; details not stored for this older record, see the transaction');
+  assert.equal(en.parts[0], '6 operations; details not stored or not decoded, see the transaction');
   const [unknown] = build([{ ...event, call: { selector: '8f2a0bb0' } }], 'en');
   assert.equal(unknown.title, 'Multisig submitted: batch schedule');
   assert.equal(unknown.parts.at(-1).href, 'https://hyperevmscan.io/tx/' + event.tx);
