@@ -302,6 +302,7 @@ export const english = {
   "PaperTokenomics 曲线参数（平坦区阈值、质押者分配上限、平坦铸币率、衰减尺度，按调用参数位置推断）": "PaperTokenomics curve parameters (flat-region threshold, staker allocation cap, flat mint rate, decay scale; inferred from argument positions)",
   "多签签名人配置": "Multisig signer configuration",
   "未知函数 ": "Unknown function ",
+  "空调用": "Empty call",
   "Exchange（交易、市场、费率）": "Exchange (trading, markets, fees)",
   "PaperTokenomics（铸币与分配曲线）": "PaperTokenomics (minting and allocation curves)",
   "ProxyAdmin（合约升级）": "ProxyAdmin (contract upgrades)",

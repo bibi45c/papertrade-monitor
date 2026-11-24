@@ -1,8 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { decodeLog, describeCall, instrumentChanges, classifyMarket, jumpStats, upcomingEvents, KNOWN_OPERATIONS, GOVERNANCE } from '../src/watch.mjs';
 import { lpDrainRisk } from '../src/model.mjs';
-import { scanGovernance, mergeBlockRanges } from '../src/watch.mjs';
+import { scanGovernance, mergeBlockRanges, relabelCall } from '../src/watch.mjs';
+
+const { multisigSubmittedBatch: [submittedBatch], timelockCancelled: [cancelled], timelockExecuted: [operationExecuted] } = JSON.parse(readFileSync(new URL('./fixtures/governance-logs.json', import.meta.url), 'utf8'));
+const readWord = (data, offset) => Number(BigInt('0x' + data.slice(offset, offset + 64)));
+const batchLengthOffset = 2 + readWord(submittedBatch.data, 2 + 64) * 2;
+const batchStart = batchLengthOffset + 64;
+const batchData = submittedBatch.data.slice(batchStart, batchStart + readWord(submittedBatch.data, batchLengthOffset) * 2);
+const word = n => BigInt(n).toString(16).padStart(64, '0');
+const dynamicBytes = data => word(data.length / 2) + data.padEnd(Math.ceil(data.length / 64) * 64, '0');
+const replaceWord = (data, i, value) => data.slice(0, 8 + i * 64) + word(value) + data.slice(8 + (i + 1) * 64);
+const scheduleCall = data => 'b0e58bc9' + word(GOVERNANCE.timelock) + word(0) + word(128) + word(0) + dynamicBytes(data);
+const singleBatch = data => '8b07f62b' + [128, 192, 256, 0, 1, GOVERNANCE.timelock, 1, 0, 1, 32].map(word).join('') + dynamicBytes(data);
 
 // 2026-10-11 区块 48191335 的真实日志：多签执行 timelock.schedule，timelock 发出排程事件。
 const scheduled = { address: '0xb915fa41e824d6aa31bb833ee81220c0f2c8ea0f', blockNumber: '0x2df5767', transactionHash: '0xad38ffd14ec3032301199d3af3388599c483c963b1ce478e9e78d3bb36ac2f3d',
@@ -22,6 +34,92 @@ test('multisig execution reveals the nested schedule target before the timelock 
   assert.equal(e.kind, 'multisigExecuted'); assert.equal(e.call.selector, 'b0e58bc9');
   assert.equal(e.call.inner.target, GOVERNANCE.tokenomics); assert.deepEqual(e.call.inner.args, ['2000000', '10000000', '100', '120000000']);
   assert.match(describeCall(GOVERNANCE.exchange, 'deadbeef').label, /未知函数 0xdeadbeef/);
+});
+
+test('real multisig batch decodes all six builder approvals in order', () => {
+  const event = decodeLog(submittedBatch);
+  assert.equal(event.kind, 'multisigSubmitted');
+  assert.equal(event.call.selector, '8b07f62b');
+  assert.equal(event.call.label, 'timelock 批量排程 scheduleBatch');
+  assert.equal(event.call.args.length, 6);
+  assert.deepEqual(event.call.args.slice(0, 3), ['128', '352', '576']);
+  assert.equal(event.call.args[4], '6');
+  assert.ok(event.call.batch.every(c => c.target === '0xfdc6550436dd75ce8a0b145f935b7d3a64f53248' && c.selector === '54dc2a02'));
+  const labeled = relabelCall(event.call);
+  assert.equal(labeled.batchSize, 6);
+  assert.deepEqual(labeled.batch.map(c => c.display[0]), [
+    '0x22d91e1295e733a0723b1cc0e7e946020f5f2a8f', '0x38a013a8267ff13858e3da037a140d7313db829e',
+    '0x71b09a08257078a4d642f7dd7315e656c837329a', '0xfeefee73ab3bee914108f61c647420372b488fee',
+    '0xacad4f2a00a3c31ca33d08928c2b59f15d6c013e', '0x0ea2347089df73e234674d4031248d1d21f49d6e',
+  ]);
+  assert.equal(event.call.batchSize, undefined);
+  assert.equal(event.call.batch[0].display, undefined);
+  const reordered = replaceWord(replaceWord(batchData, 19, 288), 20, 192);
+  const calls = describeCall(GOVERNANCE.timelock, reordered).batch;
+  assert.deepEqual(calls.slice(0, 2).map(c => c.args), [event.call.batch[1].args, event.call.batch[0].args]);
+});
+
+test('malformed batch calldata falls back to bounded raw arguments', () => {
+  const huge = 2n ** 256n - 1n;
+  const cases = [
+    ['truncated header', batchData.slice(0, 8 + 64)],
+    ['truncated final payload', batchData.slice(0, -64)],
+    ['truncated final padding', batchData.slice(0, -2)],
+    ['unsafe array offset', replaceWord(batchData, 0, huge)],
+    ['out-of-range array offset', replaceWord(batchData, 2, 65536)],
+    ['empty array', replaceWord(batchData, 4, 0)],
+    ['over-limit array', replaceWord(batchData, 4, 65)],
+    ['unsafe array length', replaceWord(batchData, 4, huge)],
+    ['mismatched lengths', replaceWord(batchData, 11, 5)],
+    ['self-referencing bytes offset', replaceWord(batchData, 19, 0)],
+    ['shared bytes offset', replaceWord(batchData, 20, 192)],
+    ['unsafe bytes offset', replaceWord(batchData, 19, huge)],
+    ['unsafe bytes length', replaceWord(batchData, 25, huge)],
+    ['invalid hex', batchData.slice(0, 8) + 'zz' + batchData.slice(10)],
+  ];
+  for (const [name, data] of cases) {
+    const call = describeCall(GOVERNANCE.timelock, data);
+    assert.equal(call.selector, '8b07f62b', name);
+    assert.equal(call.batch, undefined, name);
+    assert.ok(call.args.length <= 6 && call.args.every(v => /^\d+$/.test(v)), name);
+  }
+});
+
+test('nested scheduling stops at depth two and handles short or malformed calldata', () => {
+  const describe = data => describeCall(GOVERNANCE.timelock, data);
+  const empty = describe(singleBatch('abcd')).batch[0];
+  assert.deepEqual(empty, { target: GOVERNANCE.timelock, selector: '', label: '空调用', where: empty.where, args: [] });
+  const nested = describe(singleBatch(scheduleCall(singleBatch('deadbeef')))).batch[0].inner;
+  assert.equal(nested.selector, '8b07f62b');
+  assert.equal(nested.batch, undefined);
+  const single = scheduleCall('deadbeef');
+  for (const data of [single.slice(0, -64), replaceWord(single, 2, 0), replaceWord(single, 2, 2n ** 255n), replaceWord(single, 4, 2n ** 255n)]) {
+    const call = describe(data);
+    assert.equal(call.inner, undefined);
+    assert.ok(Array.isArray(call.args));
+  }
+});
+
+test('legacy batch size is inferred only from a matching selector and plausible ABI arguments', () => {
+  const args = ['128', '352', '576', '0', '6'];
+  const old = { selector: '8b07f62b', label: '未知函数 0x8b07f62b', args };
+  assert.equal(relabelCall(old).batchSize, 6);
+  assert.equal(relabelCall(old).label, 'timelock 批量排程 scheduleBatch');
+  assert.equal(old.batchSize, undefined);
+  assert.equal(relabelCall({ ...old, selector: '8f2a0bb0' }).batchSize, undefined);
+  assert.equal(relabelCall({ ...old, args: ['160', ...args.slice(1)] }).batchSize, undefined);
+  for (const size of ['0', '1.5', '65', '9007199254740993']) {
+    assert.equal(relabelCall({ ...old, args: [...args.slice(0, 4), size] }).batchSize, undefined);
+  }
+});
+
+test('scheduled operations keep args without storing batch details or raw calldata', () => {
+  const log = { ...scheduled, data: scheduled.data.slice(0, 2 + 4 * 64) + dynamicBytes(batchData) };
+  const event = decodeLog(log);
+  assert.equal(event.selector, '8b07f62b');
+  assert.equal(event.args[4], '6');
+  assert.equal(event.batch, undefined);
+  assert.equal(event.data, undefined);
 });
 const inst = (symbol, id, assetIndex, extra = {}) => ({ symbol, id, assetIndex, baseRate: .1, rateMultiplier: 15000, positionMultiplier: symbol === 'ETH' ? 483.979 : 814.598, referenceNotional: 100000, maxLeverage: 1000, maxPositionNotional: 1e7, active: true, paused: false, terminal: false, longOi: 0, shortOi: 0, ...extra });
 const trading = instruments => ({ instruments, minimumOpenNotional: 10000, minimumMargin: 10, paused: false });
@@ -95,4 +193,76 @@ test('failed governance chunks remain pending while successful live coverage is 
   } });
   assert.equal(s.lastScannedBlock, 2100); assert.deepEqual(s.gaps, [[0, 500]]); assert.equal(s.readErrors.length, 1);
   assert.equal(s.coverageComplete, false);
+});
+
+const blockHex = n => '0x' + n.toString(16);
+const atBlock = (log, block) => ({ ...log, blockNumber: blockHex(block) });
+function scanLogs(logs, head, previous) {
+  return scanGovernance({ previous, archiveUrl: null, fetcher: async (_url, options) => {
+    const { method, params } = JSON.parse(options.body);
+    if (method === 'eth_blockNumber') return Response.json({ result: blockHex(head) });
+    const { fromBlock, toBlock } = params[0];
+    return Response.json({ result: logs.filter(log => Number(log.blockNumber) >= Number(fromBlock) && Number(log.blockNumber) <= Number(toBlock)) });
+  } });
+}
+
+test('timelock end events preserve their explicit kind and operation ID', () => {
+  for (const [log, kind] of [[operationExecuted, 'operationExecuted'], [cancelled, 'operationCancelled']]) {
+    assert.equal(decodeLog(log).kind, kind);
+    assert.equal(decodeLog(log).topic1, log.topics[1]);
+    assert.equal(decodeLog({ ...log, address: GOVERNANCE.multisig }).kind, 'unknown');
+  }
+});
+
+test('scan records executed, cancelled and unknown endings and keeps the highest resolution block', async () => {
+  const [executedId, cancelledId] = [operationExecuted.topics[1], cancelled.topics[1]];
+  const unknownTopic = '0x' + 'aa'.repeat(32), unknownId = '0x' + 'bb'.repeat(32);
+  const unknown = { ...cancelled, topics: [unknownTopic, unknownId] };
+  const earlierCancellation = { ...cancelled, topics: [cancelled.topics[0], executedId] };
+  const previous = { lastScannedBlock: 10, operations: [executedId, cancelledId, unknownId].map(id => ({ id, scheduledBlock: 10 })) };
+  const logs = [atBlock(operationExecuted, 25), atBlock(earlierCancellation, 20), atBlock(cancelled, 23), atBlock(unknown, 26)];
+  const state = await scanLogs(logs, 30, previous);
+  const [done, stopped, unclassified] = state.operations;
+  assert.deepEqual([done.resolvedBlock, done.resolvedTopic, done.outcome], [25, operationExecuted.topics[0], 'executed']);
+  assert.deepEqual([stopped.resolvedBlock, stopped.resolvedTopic, stopped.outcome], [23, cancelled.topics[0], 'cancelled']);
+  assert.deepEqual([unclassified.resolvedBlock, unclassified.resolvedTopic], [26, unknownTopic]);
+  assert.equal(Object.hasOwn(unclassified, 'outcome'), false);
+
+  const rescanned = await scanLogs([atBlock(earlierCancellation, 20)], 31, { ...state, gaps: [[20, 20]] });
+  assert.deepEqual(rescanned.gaps, []);
+  assert.deepEqual(rescanned.operations, state.operations);
+  const laterUnknown = { ...unknown, topics: [unknownTopic, executedId] };
+  const updated = await scanLogs([atBlock(laterUnknown, 31)], 31, state);
+  assert.equal(updated.operations[0].resolvedBlock, 31);
+  assert.equal(updated.operations[0].resolvedTopic, unknownTopic);
+  assert.equal(Object.hasOwn(updated.operations[0], 'outcome'), false);
+});
+
+test('a new schedule after cancellation clears the ending and older rescans keep it pending', async () => {
+  const initial = { lastScannedBlock: 10, operations: [{ ...KNOWN_OPERATIONS[0], scheduledBlock: 10 }] };
+  const oldCancellation = atBlock(cancelled, 20);
+  const stopped = await scanLogs([oldCancellation], 30, initial);
+  assert.equal(stopped.operations[0].outcome, 'cancelled');
+
+  const pending = await scanLogs([atBlock(scheduled, 31), oldCancellation], 31, { ...stopped, gaps: [[20, 20]] });
+  const op = pending.operations[0];
+  assert.equal(op.scheduledBlock, 31);
+  assert.equal(op.description, KNOWN_OPERATIONS[0].description);
+  for (const field of ['resolvedBlock', 'resolvedTopic', 'outcome']) assert.equal(Object.hasOwn(op, field), false);
+  assert.deepEqual(pending.gaps, []);
+
+  const rescanned = await scanLogs([atBlock(scheduled, 10), oldCancellation], 32, { ...pending, gaps: [[10, 20]] });
+  assert.deepEqual(rescanned.operations, pending.operations);
+});
+
+test('a malformed batch log still allows its block range to be marked covered', async () => {
+  const data = replaceWord(batchData, 19, 2n ** 255n);
+  const log = atBlock({ ...submittedBatch, data: '0x' + word(0) + word(64) + dynamicBytes(data) }, 11);
+  const state = await scanLogs([log], 12, { lastScannedBlock: 12, gaps: [[11, 12]] });
+  assert.equal(state.coverageComplete, true);
+  assert.deepEqual(state.gaps, []);
+  assert.deepEqual(state.readErrors, []);
+  assert.equal(state.recentEvents[0].kind, 'multisigSubmitted');
+  assert.equal(state.recentEvents[0].call.selector, '8b07f62b');
+  assert.equal(state.recentEvents[0].call.batch, undefined);
 });

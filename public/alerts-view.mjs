@@ -23,13 +23,53 @@ function listingAlert(a, L) {
   return { level: a.level, title: titles[a.kind] ? L(...titles[a.kind]) : L('交易参数预警', 'Trading parameter alert'), parts: [a.detail] };
 }
 
-function multisigAlert(e, L) {
+function builderAddress(call) {
+  if (/^0x[\da-f]{40}$/i.test(call.display?.[0])) return call.display[0];
+  const arg = call.args?.[0];
+  if (!/^\d{1,49}$/.test(arg)) return null;
+  const hex = BigInt(arg).toString(16);
+  return hex.length <= 40 ? '0x' + hex.padStart(40, '0') : null;
+}
+
+function batchDetails(batch, L, lang) {
+  const groups = new Map();
+  for (const call of batch) {
+    const key = call.target + ':' + call.selector;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(call);
+  }
+  const parts = [];
+  let remaining = 6;
+  for (const calls of groups.values()) {
+    const { label, where, target, selector } = calls[0];
+    if (parts.length) parts.push(L('；', ' | '));
+    parts.push(`${translateMessage(label, lang)} ×${calls.length}`);
+    if (selector === '54dc2a02') {
+      const builders = calls.map(builderAddress).filter(Boolean);
+      const shown = builders.slice(0, remaining), extra = builders.length - shown.length;
+      shown.forEach((addr, i) => parts.push(i ? ', ' : ' ', link('address/' + addr, short(addr), addr)));
+      if (extra) parts.push(L(` 等 ${extra} 个`, ` and ${extra} more`));
+      remaining -= shown.length;
+    }
+    const targetLabel = where && where !== target ? translateMessage(where, lang) : short(target);
+    parts.push(L('（目标 ', ' (target '), link('address/' + target, targetLabel, target), L('）', ')'));
+  }
+  return parts;
+}
+
+function multisigAlert(e, L, lang) {
   const c = e.call?.inner ?? e.call, executed = e.kind === 'multisigExecuted';
   const verb = executed ? L('多签执行', 'Multisig executed') : L('多签提交', 'Multisig submitted');
   const parts = [];
   let title;
   const sep = L('：', ': ');
-  if (['a9059cbb', '095ea7b3'].includes(c?.selector) && TOKENS[c.target]) {
+  if (['8b07f62b', '8f2a0bb0'].includes(c?.selector)) {
+    const size = c.batch?.length || c.batchSize;
+    const operations = size === 1 ? 'operation' : 'operations';
+    title = `${verb}${sep}${size ? L(`批量排程 ${size} 项`, `batch schedule of ${size} ${operations}`) : L('批量排程', 'batch schedule')}`;
+    if (c.batch?.length) parts.push(...batchDetails(c.batch, L, lang));
+    else parts.push(size ? L(`共 ${size} 项，旧记录未存明细，见交易`, `${size} ${operations}; details not stored for this older record, see the transaction`) : L('旧记录未存明细，见交易', 'Details not stored for this older record, see the transaction'));
+  } else if (['a9059cbb', '095ea7b3'].includes(c?.selector) && TOKENS[c.target]) {
     const to = c.display?.[0] ?? '', amount = c.display?.[1] ?? '', approve = c.selector === '095ea7b3';
     title = `${verb}${sep}${approve ? L('授权', 'approval of') : L('转出', 'transfer of')} ${amount}`;
     parts.push(approve ? L('被授权地址 ', 'Spender ') : L('收款 ', 'To '), link('address/' + to, short(to), to));
@@ -40,8 +80,8 @@ function multisigAlert(e, L) {
     title = `${verb}${sep}${L('执行 timelock 已到期排程', 'executed matured timelock operations')}`;
     parts.push(L('具体操作见上方排程表', 'See the timelock table above for the operations'));
   } else if (c) {
-    title = `${verb}${sep}${translateMessage(c.label)}`;
-    parts.push(`${translateMessage(c.where)}${c.display ? ' · ' + c.display.join(', ') : ''}`);
+    title = `${verb}${sep}${translateMessage(c.label, lang)}`;
+    parts.push(`${translateMessage(c.where, lang)}${c.display ? ' · ' + c.display.join(', ') : ''}`);
   } else title = `${verb}${sep}${L('未解析调用', 'undecoded call')}`;
   if (!executed) parts.push(L(' · 扫描到的日志中未见执行记录', ' · no execution seen in scanned logs'));
   parts.push(' · ', link('tx/' + e.tx, L(`区块 ${e.block}`, `block ${e.block}`), e.tx));
@@ -54,7 +94,7 @@ export function buildAlerts({ listing, web, events, lang, time, now }) {
   // A submission that was later executed (same multisig transaction id) is shown once, as executed.
   const ms = (events ?? []).filter(e => e.kind === 'multisigSubmitted' || e.kind === 'multisigExecuted');
   const executedIds = new Set(ms.filter(e => e.kind === 'multisigExecuted').map(e => e.topic1));
-  for (const e of ms.filter(e => e.kind === 'multisigExecuted' || !executedIds.has(e.topic1)).slice(0, 5)) out.push(multisigAlert(e, L));
+  for (const e of ms.filter(e => e.kind === 'multisigExecuted' || !executedIds.has(e.topic1)).slice(0, 5)) out.push(multisigAlert(e, L, lang));
   const rank = { critical: 0, high: 1, info: 2 };
   return out.sort((a, b) => (rank[a.level] ?? 3) - (rank[b.level] ?? 3));
 }

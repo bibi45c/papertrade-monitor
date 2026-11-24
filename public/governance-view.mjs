@@ -30,6 +30,13 @@ function describe(o, lang) {
   }
 }
 
+export function operationOutcome(o) {
+  if (['executed', 'cancelled', 'unknown'].includes(o.outcome)) return o.outcome;
+  if (o.resolvedTopic === '0x2a08801cf3674ab09756ae78a3a4833813465af6af958136b360eab6b71c8952') return 'executed';
+  if (o.resolvedTopic === '0xcf0f63b97f3387253cbc0bde884f975df77e39184dc3280c2c81be495f58eef4') return 'cancelled';
+  return o.resolvedBlock == null ? null : 'unknown';
+}
+
 export function renderGovernanceTable({ ops, now, time, applied, lang, number, available }) {
   const zh = lang === 'zh', L = (a, b) => zh ? a : b, body = document.getElementById('govTable');
   if (!ops.length) {
@@ -37,7 +44,8 @@ export function renderGovernanceTable({ ops, now, time, applied, lang, number, a
     td.colSpan = 4; td.textContent = available ? L('没有排程操作', 'No scheduled operations') : L('治理数据不可用，不能当作没有排程', 'Governance data unavailable; this does not mean nothing is scheduled');
     tr.append(td); body.replaceChildren(tr); return;
   }
-  const state = o => applied(o) ? 2 : o.readyAt <= now ? 1 : 0;
+  const state = o => operationOutcome(o) || applied(o) ? 2 : o.readyAt <= now ? 1 : 0;
+  const done = { executed: L('已执行', 'Executed'), cancelled: L('已取消', 'Cancelled'), unknown: L('已执行或取消', 'Executed or cancelled') };
   const sorted = [...ops].sort((a, b) => state(a) - state(b) || b.readyAt - a.readyAt);
   body.replaceChildren(...sorted.map(o => {
     const tr = document.createElement('tr'); tr.className = 'gov-row';
@@ -51,9 +59,9 @@ export function renderGovernanceTable({ ops, now, time, applied, lang, number, a
     const when = document.createElement('td'); when.textContent = time(o.readyAt);
     const status = document.createElement('td'), badge = document.createElement('span'), s = state(o);
     badge.className = 'badge ' + ['wait', 'ready', 'done'][s];
-    badge.textContent = s === 2 ? (o.resolvedBlock ? L('已执行或取消', 'Executed or cancelled') : L('已生效', 'In effect')) : s === 1 ? L('可执行 · 等多签', 'Executable · awaiting multisig') : L(`排程中 · ${number((o.readyAt - now) / 86400000, 1)} 天后`, `Scheduled · in ${number((o.readyAt - now) / 86400000, 1)} days`);
+    badge.textContent = s === 2 ? (done[operationOutcome(o)] ?? L('已生效', 'In effect')) : s === 1 ? L('可执行 · 等多签', 'Executable · awaiting multisig') : L(`排程中 · ${number((o.readyAt - now) / 86400000, 1)} 天后`, `Scheduled · in ${number((o.readyAt - now) / 86400000, 1)} days`);
     status.append(badge);
-    if (o.resolvedBlock) { const blk = document.createElement('div'); blk.className = 'op-detail'; blk.textContent = L('区块 ', 'Block ') + o.resolvedBlock; status.append(blk); }
+    if (o.resolvedBlock != null) { const blk = document.createElement('div'); blk.className = 'op-detail'; blk.textContent = L('区块 ', 'Block ') + o.resolvedBlock; status.append(blk); }
     tr.append(op, target, when, status);
     return tr;
   }));

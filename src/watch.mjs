@@ -14,6 +14,8 @@ export const GOVERNANCE = Object.freeze({
 // 合约源码未验证；以下事件和函数名由 2026-10-11 的链上交易反推。
 const TOPICS = Object.freeze({
   scheduled: '0x78f3bc93d9f0e2beb7fc8fe3192b142c5e70b8813403674aff3f81fc83af5b39',
+  operationExecuted: '0x2a08801cf3674ab09756ae78a3a4833813465af6af958136b360eab6b71c8952',
+  operationCancelled: '0xcf0f63b97f3387253cbc0bde884f975df77e39184dc3280c2c81be495f58eef4',
   submitted: '0xbe411f0729ceed75',
   executed: '0xd3fb8b9f824d81f0',
   signersSet: '0xddfe9ff988d8830e',
@@ -32,6 +34,7 @@ const SELECTORS = Object.freeze({
   'a6cc2c8c': 'timelock 批量执行已到期排程 executeBatch',
   'e38335e5': 'timelock 批量执行已到期排程 executeBatch',
   '8f2a0bb0': 'timelock 批量排程 scheduleBatch',
+  '8b07f62b': 'timelock 批量排程 scheduleBatch',
   '134008d3': 'timelock 执行已到期排程 execute',
   '88aa4c12': 'timelock 执行已到期排程 execute',
 });
@@ -39,8 +42,10 @@ const SELECTORS = Object.freeze({
 const ADDRESS_ARGS = Object.freeze({ a9059cbb: [0], '095ea7b3': [0], '99a88ec4': [0, 1], '54dc2a02': [0] });
 const TOKENS = Object.freeze({ '0xb88339cb7199b77e23db6e890353e22632ba630f': { symbol: 'USDC', decimals: 6 } });
 const PLACES = Object.freeze({ '0x3333333333333333333333333333333333333333': 'HyperCore CoreWriter（EVM → Hyperliquid Core）', '0xb88339cb7199b77e23db6e890353e22632ba630f': 'USDC 代币合约' });
+const MAX_BATCH_SIZE = 64;
+const MAX_CALL_DEPTH = 2;
 const fromDecimal = v => { try { return '0x' + BigInt(v).toString(16).padStart(40, '0'); } catch { return v; } };
-// 把旧记录里的十进制参数整理成可读形式；已保存的原始 args 不改，只在 label/display 上补充。
+// 把旧记录里的十进制参数整理成可读形式，保留已保存的原始 args。
 export function relabelCall(call) {
   if (!call?.selector) return call;
   const selector = call.selector, label = SELECTORS[selector] ?? call.label, out = { ...call, label };
@@ -53,6 +58,13 @@ export function relabelCall(call) {
     out.display = shown;
   }
   if (call.inner) out.inner = relabelCall(call.inner);
+  if (Array.isArray(call.batch)) {
+    out.batch = call.batch.map(relabelCall);
+    out.batchSize = out.batch.length;
+  } else if (selector === '8b07f62b' && call.args?.[0] === '128') {
+    const size = Number(call.args[4]);
+    if (Number.isInteger(size) && size >= 1 && size <= MAX_BATCH_SIZE) out.batchSize = size;
+  }
   return out;
 }
 // 已知的排程操作：2026-10-11 01:26 新加坡时间由多签确认，只改质押者分配上限 5M → 10M。
@@ -68,37 +80,109 @@ const toAddress = w => '0x' + w.slice(24);
 const big = w => BigInt('0x' + (w || '0'));
 const usd = w => (big(w) / 10n ** 18n).toString();
 
+function abiSize(body, position) {
+  const encoded = body.slice(position, position + 64);
+  if (!/^[\da-f]{64}$/i.test(encoded)) return null;
+  const size = Number(big(encoded));
+  return Number.isSafeInteger(size) ? size : null;
+}
+
+// ABI offsets count bytes, while the slices below count hex characters.
+function abiOffset(body, position, minimum) {
+  const size = abiSize(body, position);
+  if (size === null || size % 32 !== 0 || size > (body.length - 64) / 2) return null;
+  const offset = size * 2;
+  return offset >= minimum ? offset : null;
+}
+
+function abiBytes(body, offset) {
+  if (offset === null) return null;
+  const size = abiSize(body, offset), start = offset + 64;
+  if (size === null || Math.ceil(size / 32) > (body.length - start) / 64) return null;
+  return body.slice(start, start + size * 2);
+}
+
+function describeBatch(body, depth) {
+  const offsets = [0, 64, 128].map(position => abiOffset(body, position, 4 * 64));
+  if (offsets.includes(null)) return null;
+  const [targets, values, payloads] = offsets;
+  const count = abiSize(body, targets);
+  if (count === null || count < 1 || count > MAX_BATCH_SIZE || abiSize(body, values) !== count || abiSize(body, payloads) !== count) return null;
+
+  const wordsLength = (count + 1) * 64;
+  const sorted = [...offsets, body.length].sort((a, b) => a - b);
+  if (sorted.slice(0, 3).some((offset, i) => offset + wordsLength > sorted[i + 1])) return null;
+  const bytes = body.slice(payloads + 64, sorted[sorted.indexOf(payloads) + 1]);
+  const calls = [];
+  for (let i = 0; i < count; i++) {
+    const address = word(body, targets / 64 + 1 + i);
+    const offset = abiOffset(bytes, i * 64, count * 64), data = abiBytes(bytes, offset);
+    if (!/^0{24}[\da-f]{40}$/i.test(address) || data === null) return null;
+    calls.push({ target: toAddress(address), offset, data });
+  }
+  // Shared or overlapping payloads could multiply the decoded tree written to D1.
+  let end = count * 64;
+  for (const { offset, data } of [...calls].sort((a, b) => a.offset - b.offset)) {
+    if (offset < end) return null;
+    end = offset + 64 + Math.ceil(data.length / 64) * 64;
+  }
+  return calls.map(({ target, data }) => ({ target, ...describeNestedCall(target, data, depth + 1, true) }));
+}
+
 export function describeCall(target, data) {
-  const selector = data.slice(0, 8), body = data.slice(8), words = [];
-  for (let i = 0; i * 64 < body.length; i++) words.push(word(body, i));
-  const label = SELECTORS[selector] ?? `未知函数 0x${selector}`;
+  return describeNestedCall(target, data, 0, true);
+}
+
+function describeNestedCall(target, data, depth, includeBatch) {
+  const calldata = typeof data === 'string' ? data : '';
+  const selector = calldata.length >= 8 ? calldata.slice(0, 8) : '', body = calldata.slice(8);
+  const label = SELECTORS[selector] ?? (selector ? `未知函数 0x${selector}` : '空调用');
   const where = target === GOVERNANCE.exchange ? 'Exchange（交易、市场、费率）' : target === GOVERNANCE.tokenomics ? 'PaperTokenomics（铸币与分配曲线）' : target === GOVERNANCE.proxyAdmin ? 'ProxyAdmin（合约升级）' : target === GOVERNANCE.timelock ? 'Timelock（最短延迟 1 天）' : target === GOVERNANCE.multisig ? '多签自身' : target;
   // 多签提交给 timelock 的 schedule：再解一层，提前约半小时看到将要排程的目标与函数。
-  if (selector === 'b0e58bc9' && words.length >= 5) {
-    const innerTarget = toAddress(words[0]), offset = Number(big(words[2])) * 2, len = Number(big(body.slice(offset, offset + 64)));
-    return { selector, label, where, inner: { target: innerTarget, ...describeCall(innerTarget, body.slice(offset + 64, offset + 64 + len * 2)) } };
+  if (depth < MAX_CALL_DEPTH && selector === 'b0e58bc9') {
+    const address = word(body, 0), innerData = abiBytes(body, abiOffset(body, 2 * 64, 4 * 64));
+    if (/^0{24}[\da-f]{40}$/i.test(address) && innerData !== null) {
+      const innerTarget = toAddress(address);
+      return { selector, label, where, inner: { target: innerTarget, ...describeNestedCall(innerTarget, innerData, depth + 1, includeBatch) } };
+    }
   }
-  return { selector, label, where, args: selector === '12baae3b' ? words.slice(0, 4).map(usd) : words.slice(0, 6).map(w => big(w).toString()) };
+  const words = [];
+  for (let i = 0; i < (selector === '12baae3b' ? 4 : 6) && i * 64 < body.length; i++) {
+    const w = word(body, i);
+    if (!/^[\da-f]+$/i.test(w)) break;
+    words.push(w);
+  }
+  const call = { selector, label, where, args: selector === '12baae3b' ? words.map(usd) : words.map(w => big(w).toString()) };
+  if (includeBatch && depth < MAX_CALL_DEPTH && selector === '8b07f62b') {
+    const batch = describeBatch(body, depth);
+    if (batch) call.batch = batch;
+  }
+  return call;
 }
 
 // timelock 排程事件：topics[1]=操作 ID，topics[2]=目标；data = value, offset, salt, readyAt(秒), len, calldata
 export function decodeScheduled(log) {
   const d = log.data.slice(2), len = Number(big(word(d, 4))), calldata = d.slice(5 * 64, 5 * 64 + len * 2);
   const target = toAddress(log.topics[2].slice(2));
-  return { id: log.topics[1], target, readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeCall(target, calldata) };
+  return { id: log.topics[1], target, readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeNestedCall(target, calldata, 0, false) };
 }
 
 export function decodeLog(log) {
-  const t0 = log.topics[0];
-  if (log.address.toLowerCase() === GOVERNANCE.timelock && t0 === TOPICS.scheduled) return { kind: 'scheduled', ...decodeScheduled(log) };
-  const kind = t0.startsWith(TOPICS.submitted) ? 'multisigSubmitted' : t0.startsWith(TOPICS.executed) ? 'multisigExecuted' : t0.startsWith(TOPICS.signersSet) ? 'signersSet' : 'unknown';
+  const t0 = log.topics[0], address = log.address.toLowerCase();
+  let kind;
+  if (address === GOVERNANCE.timelock) {
+    if (t0 === TOPICS.scheduled) return { kind: 'scheduled', ...decodeScheduled(log) };
+    if (t0 === TOPICS.operationExecuted) kind = 'operationExecuted';
+    if (t0 === TOPICS.operationCancelled) kind = 'operationCancelled';
+  }
+  kind ??= t0.startsWith(TOPICS.submitted) ? 'multisigSubmitted' : t0.startsWith(TOPICS.executed) ? 'multisigExecuted' : t0.startsWith(TOPICS.signersSet) ? 'signersSet' : 'unknown';
   let call = null;
   if (kind === 'multisigSubmitted' || kind === 'multisigExecuted') {
     const target = log.topics[3] ? toAddress(log.topics[3].slice(2)) : null, d = log.data.slice(2);
-    const offset = Number(big(word(d, 1))) * 2, len = Number(big(d.slice(offset, offset + 64))), data = d.slice(offset + 64, offset + 64 + len * 2);
-    if (target && data.length >= 8) call = { target, ...describeCall(target, data) };
+    const data = abiBytes(d, abiOffset(d, 64, 2 * 64));
+    if (target && data?.length >= 8) call = { target, ...describeCall(target, data) };
   }
-  return { kind, address: log.address.toLowerCase(), topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), tx: log.transactionHash, call };
+  return { kind, address, topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), tx: log.transactionHash, call };
 }
 
 export function mergeBlockRanges(ranges) {
@@ -128,15 +212,14 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
   const head = Number(BigInt(await rpc('eth_blockNumber', []).catch(error => archive ? archive('eth_blockNumber', []) : Promise.reject(error))));
   const last = Number.isSafeInteger(previous?.lastScannedBlock) ? previous.lastScannedBlock : Math.max(0, head - 300);
   if (head < last) throw new Error('Governance head moved behind cursor');
-  const from = Math.max(last + 1, head - 999, 0), logs = [], readErrors = [];
+  const from = Math.max(last + 1, head - 999, 0), events = [], readErrors = [];
   let gaps = mergeBlockRanges([...(previous?.gaps ?? []), ...(from > last + 1 ? [[last + 1, from - 1]] : [])]);
   const read = async (start, end, via = rpc, quiet = false) => {
     try {
       const result = await via('eth_getLogs', [{ address: [GOVERNANCE.timelock, GOVERNANCE.multisig], fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
       if (!Array.isArray(result)) throw new Error('Invalid governance log response');
       // Decode before marking a range covered: malformed logs must remain recoverable.
-      result.forEach(decodeLog);
-      logs.push(...result); gaps = subtractRange(gaps, start, end); return true;
+      events.push(...result.map(decodeLog)); gaps = subtractRange(gaps, start, end); return true;
     } catch (error) {
       gaps = mergeBlockRanges([...gaps, [start, end]]);
       if (!quiet) readErrors.push({ from: start, through: end, error: String(error.message ?? error).slice(0, 180) });
@@ -155,12 +238,29 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
     used++;
     if (!await read(start, end)) break;
   }
-  const events = logs.map(decodeLog);
   const ops = new Map((previous?.operations ?? KNOWN_OPERATIONS).map(o => [o.id, o]));
-  for (const e of events) if (e.kind === 'scheduled') ops.set(e.id, { ...ops.get(e.id), ...e });
-  // timelock 的执行/取消事件未识别具体签名：同一操作 ID 再次出现即标记为已执行或已取消。
-  for (const e of events) if (e.kind === 'unknown' && e.address === GOVERNANCE.timelock && ops.has(e.topic1)) ops.set(e.topic1, { ...ops.get(e.topic1), resolvedBlock: e.block, resolvedTopic: e.topic0 });
-  const recent = [...new Map([...events.filter(e => e.kind !== 'scheduled'), ...(previous?.recentEvents ?? [])].map(e => [e.tx + ':' + e.topic0 + ':' + e.topic1, e])).values()].sort((a, b) => b.block - a.block).slice(0, 20);
+  for (const e of events) {
+    if (e.kind !== 'scheduled') continue;
+    const old = ops.get(e.id);
+    if (e.scheduledBlock < old?.scheduledBlock) continue;
+    const op = { ...old, ...e };
+    if (op.scheduledBlock > op.resolvedBlock) {
+      delete op.resolvedBlock;
+      delete op.resolvedTopic;
+      delete op.outcome;
+    }
+    ops.set(e.id, op);
+  }
+  for (const e of events) {
+    if (e.address !== GOVERNANCE.timelock || !['operationExecuted', 'operationCancelled', 'unknown'].includes(e.kind)) continue;
+    const old = ops.get(e.topic1);
+    if (!old || e.block < old.scheduledBlock || e.block < old.resolvedBlock) continue;
+    const op = { ...old, resolvedBlock: e.block, resolvedTopic: e.topic0 };
+    if (e.kind === 'unknown') delete op.outcome;
+    else op.outcome = e.kind === 'operationExecuted' ? 'executed' : 'cancelled';
+    ops.set(e.topic1, op);
+  }
+  const recent = [...new Map([...(previous?.recentEvents ?? []), ...events.filter(e => e.kind !== 'scheduled')].map(e => [e.tx + ':' + e.topic0 + ':' + e.topic1, e])).values()].sort((a, b) => b.block - a.block).slice(0, 20);
   return { at: Date.now(), block: '0x' + head.toString(16), lastScannedBlock: head, scannedFrom: from, operations: [...ops.values()], recentEvents: recent, gaps, readErrors, coverageComplete: gaps.length === 0 && readErrors.length === 0 };
 }
 
