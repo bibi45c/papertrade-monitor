@@ -200,6 +200,60 @@ export function dividendWindow48(rows = [], protocolHours = [], now = Date.now()
     bins };
 }
 
+export const PROFIT_INDEX_MAX_AGE = 15 * 60000;
+export const PROFIT_HOURLY_MAX_AGE = 10 * 60000;
+
+// Decide which profit-path inputs are fresh enough for dividendWindow48.
+// Index freshness allows the 5m edge cache + 5m poll cycle with margin, without exceeding the 15m cache limit.
+export function profitWindowSources({
+  dividendRows = [],
+  profitHistoryState = 'ready',
+  protocolHours = [],
+  hourlySource = null,
+  now = Date.now(),
+  indexMaxAge = PROFIT_INDEX_MAX_AGE,
+  hourlyMaxAge = PROFIT_HOURLY_MAX_AGE,
+} = {}) {
+  const rows = Array.isArray(dividendRows) ? dividendRows : [];
+  const hours = Array.isArray(protocolHours) ? protocolHours : [];
+  // minuteAt: the collector is alive. indexAt: newest sample that really carries an index; only this one is reported as the data time.
+  let minuteAt = null, indexAt = null;
+  for (const r of rows) if (Number.isFinite(r?.collected_at)) {
+    if (minuteAt === null || r.collected_at > minuteAt) minuteAt = r.collected_at;
+    if (typeof r.reward_accumulator === 'string' && /^\d+$/.test(r.reward_accumulator) && (indexAt === null || r.collected_at > indexAt)) indexAt = r.collected_at;
+  }
+  const hourlyAt = hourlySource?.ok && Number.isFinite(hourlySource.at) ? hourlySource.at : null;
+  const freshAt = (at, maxAge) => at !== null && now - at <= maxAge && at <= now + 5000;
+  const indexFresh = profitHistoryState === 'ready' && indexAt !== null && freshAt(minuteAt, indexMaxAge);
+  const hourlyFresh = freshAt(hourlyAt, hourlyMaxAge);
+  const activeTimestamps = [];
+  if (indexFresh) activeTimestamps.push(indexAt);
+  if (hourlyFresh && hours.length > 0) activeTimestamps.push(hourlyAt);
+  const sampleAt = activeTimestamps.length ? Math.min(...activeTimestamps) : (hourlyFresh ? hourlyAt : null);
+  const knownTimestamps = [indexAt, hourlyAt].filter(t => t !== null && t <= now + 5000);
+  const staleAt = sampleAt === null && knownTimestamps.length ? Math.max(...knownTimestamps) : null;
+  return {
+    indexFresh,
+    hourlyFresh,
+    minuteAt,
+    indexAt,
+    hourlyAt,
+    sampleAt,
+    staleAt,
+    rows: indexFresh ? rows : [],
+    protocolHours: hourlyFresh ? hours : [],
+  };
+}
+
+// Pick whichever auxiliary record (/api/live vs /api/latest) has the newer finite `.at` timestamp.
+export function pickNewer(a, b) {
+  if (!a) return b ?? null;
+  if (!b) return a;
+  const aAt = Number.isFinite(a.at) ? a.at : -Infinity;
+  const bAt = Number.isFinite(b.at) ? b.at : -Infinity;
+  return bAt > aAt ? b : a;
+}
+
 // 回本所需供应增长：收入/新 PAPER 稳定为 k 时，之后供应增长 g 倍，每枚约得 k × ln(g)。
 export function breakEvenGrowth(costPerPaper, incomePerNewPaper) {
   if (!Number.isFinite(costPerPaper) || costPerPaper < 0 || !positive(incomePerNewPaper)) return null;

@@ -228,6 +228,7 @@ export const english = {
   " · 有效 ": " · Valid ",
   "/48 小时 · 加权覆盖 ": "/48 hours · Weighted coverage ",
   " · 数据更新 ": " · Data updated ",
+  " · 数据过期，最近更新 ": " · Stale data, last updated ",
   " · 等待数据": " · Waiting for data",
   "正在读取历史…": "Loading history…",
   "历史读取失败": "History unavailable",
