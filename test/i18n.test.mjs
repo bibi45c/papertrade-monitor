@@ -12,12 +12,12 @@ test('English is the default, while explicit Chinese preference survives storage
 });
 
 test('translated financial messages preserve numbers, units and estimate qualifiers', () => {
-  const message = '估算（含小时统计补算） · 实测 28 / 估算 20 小时 · 有效小时普通均值 0.28 U/小时；不代表未来收益';
+  const message = '估算，缺的用小时统计补 · 实测 28 / 估算 20 小时 · 不加权均值 0.28 U/小时，历史不代表以后';
   assert.equal(translateMessage(message, 'zh'), message);
   assert.equal(translateMessage(message, 'en'), 'Estimated (includes hourly-statistic fallback) · Measured 28 / Estimated 20 hours · Mean across valid hours 0.28 U/hour; not a future return forecast');
   assert.equal(translateMessage('回本门槛过高（>100 倍）', 'en'), 'Break-even threshold too high (>100×)');
   assert.equal(translateMessage('US CPI（9 月）', 'en'), 'US CPI (Sep)');
-  assert.equal(translateMessage('完整小时窗口：10:00 — 10:00 · 有效 0/48 小时 · 加权覆盖 0.0% · 数据过期，最近更新 08:00', 'en'), 'Completed-hour window: 10:00 — 10:00 · Valid 0/48 hours · Weighted coverage 0.0% · Stale data, last updated 08:00');
+  assert.equal(translateMessage('统计窗口：10:00 — 10:00 · 有效 0/48 小时 · 加权覆盖 0.0% · 已过期，上次更新 08:00', 'en'), 'Completed-hour window: 10:00 — 10:00 · Valid 0/48 hours · Weighted coverage 0.0% · Stale data, last updated 08:00');
 });
 
 test('English HTML is usable before scripts and every static locale key has a translation', () => {

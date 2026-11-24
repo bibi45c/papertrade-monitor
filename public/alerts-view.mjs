@@ -70,29 +70,29 @@ function multisigAlert(e, L, lang) {
     const operations = size === 1 ? 'operation' : 'operations';
     title = `${verb}${sep}${size ? L(`批量排程 ${size} 项`, `batch schedule of ${size} ${operations}`) : L('批量排程', 'batch schedule')}`;
     if (c.batch?.length) parts.push(...batchDetails(c.batch, L, lang));
-    else parts.push(size ? L(`共 ${size} 项，明细未存或未能解出，见交易`, `${size} ${operations}; details not stored or not decoded, see the transaction`) : L('明细未存或未能解出，见交易', 'Details not stored or not decoded, see the transaction'));
+    else parts.push(size ? L(`共 ${size} 项，明细没存或解不出，见交易`, `${size} ${operations}; details not stored or not decoded, see the transaction`) : L('明细没存或解不出，见交易', 'Details not stored or not decoded, see the transaction'));
   } else if (['a9059cbb', '095ea7b3'].includes(c?.selector) && TOKENS[c.target]) {
     const to = c.display?.[0] ?? '', amount = c.display?.[1] ?? '', approve = c.selector === '095ea7b3';
     title = `${verb}${sep}${approve ? L('授权', 'approval of') : L('转出', 'transfer of')} ${amount}`;
     parts.push(approve ? L('被授权地址 ', 'Spender ') : L('收款 ', 'To '), link('address/' + to, short(to), to));
   } else if (c?.selector === '17938e13') {
-    title = `${verb}${sep}${L('向 HyperCore 发送动作', 'action sent to HyperCore')}`;
-    parts.push(L('经 CoreWriter 从 EVM 提交到 Hyperliquid Core（如转账、下单）；原始编码不展示', 'Submitted from EVM to Hyperliquid Core via CoreWriter (e.g. transfer or order); raw encoding hidden'));
+    title = `${verb}${sep}${L('向 HyperCore 发指令', 'action sent to HyperCore')}`;
+    parts.push(L('经 CoreWriter 发到 Hyperliquid Core（转账、下单等），原始编码没列', 'Submitted from EVM to Hyperliquid Core via CoreWriter (e.g. transfer or order); raw encoding hidden'));
   } else if (['a6cc2c8c', 'e38335e5', '134008d3', '88aa4c12'].includes(c?.selector)) {
-    title = `${verb}${sep}${L('执行 timelock 已到期排程', 'executed matured timelock operations')}`;
+    title = `${verb}${sep}${L('执行到期的 timelock 排程', 'executed matured timelock operations')}`;
     parts.push(L('具体操作见上方排程表', 'See the timelock table above for the operations'));
   } else if (c) {
     title = `${verb}${sep}${translateMessage(c.label, lang)}`;
     parts.push(`${translateMessage(c.where, lang)}${c.display ? ' · ' + c.display.join(', ') : ''}`);
   } else title = `${verb}${sep}${L('未解析调用', 'undecoded call')}`;
-  if (!executed) parts.push(L(' · 扫描到的日志中未见执行记录', ' · no execution seen in scanned logs'));
+  if (!executed) parts.push(L(' · 已扫日志里没有执行记录', ' · no execution seen in scanned logs'));
   parts.push(' · ', link('tx/' + e.tx, L(`区块 ${e.block}`, `block ${e.block}`), e.tx));
   return { level: 'high', title, parts };
 }
 
 export function buildAlerts({ listing, web, events, lang, time, now }) {
   const L = (a, b) => lang === 'zh' ? a : b, out = (listing?.alerts ?? []).map(a => listingAlert(a, L));
-  if (web?.changedAt && now - web.changedAt < 7 * 86400000) out.push({ level: 'info', title: L('官方文档或前端已更新', 'Official docs or frontend updated'), parts: [L(`${time(web.changedAt)} 更新，人工核对是否有上新或规则变化`, `Updated ${time(web.changedAt)}; review manually for listings or rule changes`)] });
+  if (web?.changedAt && now - web.changedAt < 7 * 86400000) out.push({ level: 'info', title: L('官方文档或前端已更新', 'Official docs or frontend updated'), parts: [L(`${time(web.changedAt)} 更新，看看有没有上新或改规则`, `Updated ${time(web.changedAt)}; review manually for listings or rule changes`)] });
   // A submission that was later executed (same multisig transaction id) is shown once, as executed.
   const ms = (events ?? []).filter(e => e.kind === 'multisigSubmitted' || e.kind === 'multisigExecuted');
   const executedIds = new Set(ms.filter(e => e.kind === 'multisigExecuted').map(e => e.topic1));

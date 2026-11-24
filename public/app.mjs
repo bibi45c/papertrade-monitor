@@ -34,7 +34,7 @@ function showProfitCache() {
     for (const cell of row.cells) { const td = el('td', cell.text); td.title = t(cell.title); td.colSpan = cell.span ?? 1; tr.append(td); }
     return tr;
   }));
-  set('profitFreshness', '历史缓存 · 源数据更新于 ' + time(profitCache.sampleAt) + ' · ' + (profitHistoryState === 'loading' ? '正在更新' : profitHistoryState === 'failed' ? '历史读取失败，保留上次有效结果' : '最新窗口暂不可用于回本测算，保留上次有效结果') + '；以下整块测算为旧值');
+  set('profitFreshness', '缓存 · 数据更新于 ' + time(profitCache.sampleAt) + ' · ' + (profitHistoryState === 'loading' ? '正在更新' : profitHistoryState === 'failed' ? '历史加载失败，先用上次结果' : '最新窗口数据不够算回本，先用上次结果') + '；下面整块是旧值');
   return true;
 }
 function rememberProfit(sampleAt) {
@@ -55,29 +55,29 @@ function render() {
   set('updated', time(s.collectedAt)); set('supply', compact(p?.supply)); set('mintRate', number(emissionRate(p), 3)); set('pending', compact(p?.pendingRewards) + ' U'); set('lp', compact(s.balances?.lp) + ' U');
   const chainCap = s.sources.tokenomics?.ok && Number.isFinite(s.tokenomics?.cap) ? s.tokenomics.cap : null;
   // 阈值优先用链上 Tokenomics 直读；读取失败时退回官方接口值并注明来源。
-  set('capNote', '超额分配阈值 ' + compact(chainCap ?? p?.cap) + ' U' + (chainCap !== null ? ' · 链上 Tokenomics' : Number.isFinite(p?.cap) ? ' · 接口值（链上读取失败）' : '')); set('staked', compact(p?.staked));
+  set('capNote', '超额分配阈值 ' + compact(chainCap ?? p?.cap) + ' U' + (chainCap !== null ? ' · 链上直读' : Number.isFinite(p?.cap) ? ' · 接口值（链上读取失败）' : '')); set('staked', compact(p?.staked));
   set('stakeNote', p && p.supply > 0 ? '占供应 ' + number(p.staked / p.supply * 100, 4) + '%' : '不可用');
-  set('queue', s.queue ? compact(s.queue.total) + ' U' : '不可用'); set('queueNote', s.queue ? s.queue.count + ' 笔兑付等待；与下单队列分别采集' : '兑付状态未知');
+  set('queue', s.queue ? compact(s.queue.total) + ' U' : '不可用'); set('queueNote', s.queue ? s.queue.count + ' 笔待兑付，跟下单队列无关' : '兑付状态未知');
   const q = s.executionQueue, execution = executionQueueStatus(s);
   // Without the official order preview the section shrinks to a single line of global counts.
   const compactQueue = !(q?.available && q.preview?.length);
   $('executionPanel').classList.toggle('compact', compactQueue);
-  $('executionSummary').textContent = !q?.available ? (language === 'zh' ? '下单队列状态不可用。' : 'Execution queue status unavailable.')
-    : language === 'zh' ? `全局等待 ${number(q.queuedIntents, 0)} 笔 / 已提交 ${number(q.submittedIntents, 0)} 笔 · 已提交 Gas 压力 ${number(q.saturationPct, 1)}% · 约 ${number(q.capacityBlocks, 0)} 块容量 · 官方未提供顺序预览，等待时长未知；个人排名未接入。`
+  $('executionSummary').textContent = !q?.available ? (language === 'zh' ? '下单队列数据拿不到。' : 'Execution queue status unavailable.')
+    : language === 'zh' ? `等待 ${number(q.queuedIntents, 0)} 笔 / 已提交 ${number(q.submittedIntents, 0)} 笔 · 已提交 Gas 压力 ${number(q.saturationPct, 1)}% · 排队量约 ${number(q.capacityBlocks, 0)} 块。官方没给排队顺序，要等多久、自己排第几都看不到。`
     : `Queued ${number(q.queuedIntents, 0)} / submitted ${number(q.submittedIntents, 0)} globally · submitted gas pressure ${number(q.saturationPct, 1)}% · about ${number(q.capacityBlocks, 0)} blocks of capacity · no official order preview, so wait time is unknown; personal rank not connected.`;
   const aggregateFresh = networkHealthy && q?.available && Date.now() - q.sourceAt <= 15000;
-  set('executionState', aggregateFresh && q.previewAvailable === false ? '全局统计有效 · 顺序预览未提供' : !networkHealthy || !execution.fresh ? '过期 / 不可用' : execution.busy ? '拥堵 · 手动方案已阻止' : '快照有效 · ' + age(q.sourceAt));
+  set('executionState', aggregateFresh && q.previewAvailable === false ? '全局数据正常 · 没有排队顺序' : !networkHealthy || !execution.fresh ? '过期 / 不可用' : execution.busy ? '队列拥堵' : '快照有效 · ' + age(q.sourceAt));
   set('executionCount', q?.available ? number(q.queuedIntents, 0) + ' / ' + number(q.submittedIntents, 0) : '不可用');
   set('executionBlocks', q?.available ? number(q.capacityBlocks, 0) + ' 块' : '不可用');
   set('executionPressure', q?.available ? number(q.saturationPct, 1) + '%' : '不可用');
   set('executionOldest', execution.fresh ? number(execution.oldestPreviewSeconds, 1) + ' s' : '不可用');
-  set('executionNote', execution.reason + '。个人排名未接入；请求从预览消失不证明已成交。');
+  set('executionNote', execution.reason + '。不查个人排名；从预览里消失不等于成交。');
   const actionNames = { openPosition: '开仓', closePositions: '平仓', paperStake: '质押', paperUnstake: '解除质押', paperClaim: '领取分红', paperDistribute: '分配', registerSessionKey: '会话授权', withdrawToCore: '提现' };
-  $('executionPreview').replaceChildren(...(q?.available && q.preview.length ? q.preview.map((p, idx) => { const tr = el('tr'); [idx + 1, actionNames[p.action] ?? p.action, '类别 ' + p.priorityClass, p.estimatedGas, age(p.acceptedAt)].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', q?.previewAvailable === false ? '官方未提供顺序预览；全局笔数仍可查看，等待年龄未知' : q?.available ? '该快照队列为空' : '无有效快照，不能当作没有排队'); td.colSpan = 5; tr.append(td); return tr; })()]));
-  set('notice', !fresh ? '公开来源故障或超过 30 秒，方案已阻止。旧值仅供查看，不能视为当前行情。' : p?.staked === 0 ? '当前官方质押供应为 0；待分配奖励还不能用于证明个人回本。PAPER 可交易市场价尚未核实。' : 'PAPER 可交易市场价尚未核实。请以实际分配指数与领取流水判断收益；待分配奖励没有计为现金收入。');
-  $('sources').replaceChildren(...Object.entries(s.sources).map(([name, source]) => { const row = el('div', undefined, 'source'); row.append(el('span', name), el('span', source.disabled ? source.reason : source.ok ? age(source.at) + (source.retained ? ' · 上次辅助采集' : '') : source.error, source.disabled ? 'subtle' : source.ok && Date.now() - source.at <= (source.retained ? 10 * 60000 : 30000) ? 'pos' : 'neg')); return row; }));
-  set('distribution', s.latestDistribution ? time(s.latestDistribution.at) : s.sources.paperActivity?.ok ? '尚无分配记录' : '不可用');
-  set('distributionNote', s.latestDistribution ? '该次协议分配 ' + money(s.latestDistribution.amount) : '查询官方最新分配事件');
+  $('executionPreview').replaceChildren(...(q?.available && q.preview.length ? q.preview.map((p, idx) => { const tr = el('tr'); [idx + 1, actionNames[p.action] ?? p.action, '类别 ' + p.priorityClass, p.estimatedGas, age(p.acceptedAt)].forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', q?.previewAvailable === false ? '官方没给排队顺序，等了多久不知道；全局笔数可看' : q?.available ? '当前队列为空' : '没有有效数据，不等于没人排队'); td.colSpan = 5; tr.append(td); return tr; })()]));
+  set('notice', !fresh ? '数据源出错或超过 30 秒没更新，下面是旧值。' : p?.staked === 0 ? '当前质押量为 0，待分配奖励说明不了能不能回本。PAPER 没有核实过的市价。' : 'PAPER 没有核实过的市价。收益看实际分红指数和领取记录，待分配的不算到手。');
+  $('sources').replaceChildren(...Object.entries(s.sources).map(([name, source]) => { const row = el('div', undefined, 'source'); row.append(el('span', name), el('span', source.disabled ? source.reason : source.ok ? age(source.at) + (source.retained ? ' · 后台定时采集' : '') : source.error, source.disabled ? 'subtle' : source.ok && Date.now() - source.at <= (source.retained ? 10 * 60000 : 30000) ? 'pos' : 'neg')); return row; }));
+  set('distribution', s.latestDistribution ? time(s.latestDistribution.at) : s.sources.paperActivity?.ok ? '暂无分配记录' : '不可用');
+  set('distributionNote', s.latestDistribution ? '这次分配 ' + money(s.latestDistribution.amount) : '等待官方分配记录');
   renderPlan(); renderHistory(); renderPath(); renderRisk();
 }
 
@@ -104,21 +104,21 @@ function renderRisk() {
   const ops = (g?.operations ?? []).filter(o => Number.isFinite(o.readyAt)), applied = o => o.resolvedBlock || (o.selector === '12baae3b' && Number(o.args?.[1]) > 0 && s.paper?.cap >= Number(o.args[1])), pending = ops.filter(o => !applied(o));
   set('govCount', g ? String(pending.length) : '不可用');
   const next = pending.map(o => o.readyAt).sort((a, b) => a - b)[0];
-  set('govNote', !g ? '治理扫描未接入（等待云端定时记录）' : (g.stale || now - g.at > 10 * 60000 ? '扫描失败或过期，沿用已知操作 · ' : '') + (next ? '最早 ' + time(next) + ' 可执行（' + number((next - now) / 86400000, 1) + ' 天）' : '已知记录没有待执行排程') + ' · 已检查到区块 ' + (g.lastScannedBlock ?? '—') + (g.gaps?.length ? ' · ' + g.gaps.length + ' 段历史缺口待补扫，不能认定事件齐全' : ''));
+  set('govNote', !g ? '还没有治理扫描数据' : (g.stale || now - g.at > 10 * 60000 ? '扫描失败或过期，先用旧记录 · ' : '') + (next ? '最早 ' + time(next) + ' 可执行（' + number((next - now) / 86400000, 1) + ' 天）' : '已知记录里没有待执行的') + ' · 已扫到区块 ' + (g.lastScannedBlock ?? '—') + (g.gaps?.length ? ' · ' + g.gaps.length + ' 段缺口没补完，记录可能不全' : ''));
   renderGovernanceTable({ ops, now, time, applied, lang: language, number, available: !!g });
   const web = pickNewer(s.web, stored?.web);
   const alerts = buildAlerts({ listing: s.listing, web, events: g?.recentEvents, lang: language, time, now });
   set('listingCount', s.listing ? String(alerts.length) : '不可用');
   set('listingNote', s.listing ? '当前市场：' + s.listing.symbols.join('、') : '交易参数不可用');
-  renderAlerts($('listingTable'), alerts, { lang: language, emptyText: t(s.listing ? '只有 BTC、ETH，参数与上线基线一致' : '交易参数不可用，不能当作没有变化') });
+  renderAlerts($('listingTable'), alerts, { lang: language, emptyText: t(s.listing ? '只有 BTC、ETH，参数和上线时一样' : '交易参数拿不到，不等于没变化') });
   const r = s.lpRisk;
-  set('lpCliffMove', !r ? '不可用' : r.flatRateActive ? '已在 200 万以下' : pct(r.up.toCliff));
+  set('lpCliffMove', !r ? '不可用' : r.flatRateActive ? '已低于 200 万' : pct(r.up.toCliff));
   set('lpCliffNote', r ? `tracked LP ${compact(r.trackedLp)} U · 净持仓 ${compact(r.netNotional)} U · 下跌到 200 万：${pct(r.down.toCliff)}` : '交易参数或报价不可用');
   $('lpRiskTable').replaceChildren(...(r ? [...r.legs.map(l => { const tr = el('tr'); [l.symbol, compact(l.net) + ' U（多 ' + compact(l.long) + ' / 空 ' + compact(l.short) + '）', '—', '—'].forEach(x => tr.append(el('td', x))); return tr; }), (() => { const tr = el('tr'); ['合计（同涨同跌）', compact(r.netNotional) + ' U', pct(r.up.toCliff) + ' / ' + pct(r.up.toZero), pct(r.down.toCliff) + ' / ' + pct(r.down.toZero)].forEach(x => tr.append(el('td', x))); return tr; })()] : [(() => { const tr = el('tr'), td = el('td', '不可用'); td.colSpan = 4; tr.append(td); return tr; })()]));
   const ev = s.events?.events ?? [], first = ev[0];
   set('nextEvent', first ? (first.inWindow ? '进行中 · ' : '') + first.name : s.events?.calendarExhausted ? '日历需续表' : '不可用');
-  set('nextEventNote', first ? time(first.at) + '（' + number((first.at - now) / 3600000, 1) + ' 小时后）' + (ev[1] ? ' · 之后 ' + ev[1].name + ' ' + time(ev[1].at) : '') : 'FOMC、CPI、非农；前后 30 分钟为高波动窗口');
-  const level = alerts.some(a => a.level === 'critical') ? '严重：出现可能跳空的新市场' : first?.inWindow ? '宏观事件窗口：跳空与 LP 打穿风险上升' : r && !r.flatRateActive && r.up.toCliff !== null && r.up.toCliff < 0.01 ? 'LP 缓冲薄：涨 ' + pct(r.up.toCliff) + ' 即跌破 200 万' : alerts.length ? '有变更需核对' : '平稳';
+  set('nextEventNote', first ? time(first.at) + '（' + number((first.at - now) / 3600000, 1) + ' 小时后）' + (ev[1] ? ' · 之后 ' + ev[1].name + ' ' + time(ev[1].at) : '') : 'FOMC、CPI、非农前后 30 分钟波动大');
+  const level = alerts.some(a => a.level === 'critical') ? '严重：新市场可能跳空' : first?.inWindow ? '宏观事件窗口：跳空、打穿 LP 的风险上升' : r && !r.flatRateActive && r.up.toCliff !== null && r.up.toCliff < 0.01 ? 'LP 缓冲薄：涨 ' + pct(r.up.toCliff) + ' 即跌破 200 万' : alerts.length ? '有变化，需要看' : '平稳';
   set('riskState', level);
 }
 
@@ -130,31 +130,31 @@ function renderPath() {
   const sampleAt = sources.sampleAt, k = window.incomePerNewPaper;
   if (!window.available && showProfitCache()) return;
   const missing = profitHistoryState === 'loading' ? '正在读取历史…' : profitHistoryState === 'failed' ? '历史读取失败' : '样本不足';
-  const freshnessNote = sampleAt ? ' · 数据更新 ' + time(sampleAt) : profitHistoryState === 'ready' && sources.staleAt ? ' · 数据过期，最近更新 ' + time(sources.staleAt) : ' · 等待数据';
-  set('profitFreshness', '完整小时窗口：' + time(window.startAt) + ' — ' + time(window.endAt) + ' · 有效 ' + window.validHours + '/48 小时 · 加权覆盖 ' + number(window.coverage * 100, 1) + '%' + freshnessNote);
+  const freshnessNote = sampleAt ? ' · 更新于 ' + time(sampleAt) : profitHistoryState === 'ready' && sources.staleAt ? ' · 已过期，上次更新 ' + time(sources.staleAt) : ' · 等待数据';
+  set('profitFreshness', '统计窗口：' + time(window.startAt) + ' — ' + time(window.endAt) + ' · 有效 ' + window.validHours + '/48 小时 · 加权覆盖 ' + number(window.coverage * 100, 1) + '%' + freshnessNote);
   set('incomePerNew', k === null ? missing : paperUnitPrecise(k));
-  set('incomePerNewNote', '48 小时加权官方已分配收入 ÷ 加权新铸 PAPER；不含待分配奖励');
+  set('incomePerNewNote', '48 小时加权：已分配收入 ÷ 新铸 PAPER，不含待分配');
   set('stakerShare', k !== null && rate !== null ? number(k * rate * 100, 1) + '%' : '不可用');
   set('paperYield', window.available ? paperUnitPrecise(window.weightedPerPaperHour) + ' / 小时' : missing);
-  set('paperYieldNote', (window.estimatedHours ? '估算（含小时统计补算）' : '实测分红指数') + ' · 实测 ' + window.measuredHours + ' / 估算 ' + window.estimatedHours + ' 小时 · 有效小时普通均值 ' + paperUnitPrecise(window.meanPerPaperHour) + '/小时；不代表未来收益');
+  set('paperYieldNote', (window.estimatedHours ? '估算，缺的用小时统计补' : '实测分红指数') + ' · 实测 ' + window.measuredHours + ' / 估算 ' + window.estimatedHours + ' 小时 · 不加权均值 ' + paperUnitPrecise(window.meanPerPaperHour) + '/小时，历史不代表以后');
   const cost = btc && rate !== null ? pairHedgeCost(btc, rate, .01) : null;
   const costFresh = networkHealthy && ['summary', 'trading'].every(key => s.sources[key]?.ok && Date.now() - s.sources[key].at <= 30000);
   set('currentCost', costFresh ? paperUnitMoney(cost?.costPerPaper) : '参数过期 / 不可用');
-  set('currentCostNote', '当前估算净损耗 · Paper 多空等量对冲，波动 1% 一起平 · 参数 ' + time(s.sources.trading?.at) + '；不含 GAS，非保证金或市场价');
+  set('currentCostNote', 'Paper 等量多空，价格动 1% 一起平的净亏 · 参数 ' + time(s.sources.trading?.at) + '；没算 gas，不是保证金或市价');
   set('supplyGrowth', window.supplyGrowth !== null ? '×' + number(window.supplyGrowth, 4) : '不可用');
   const paths = [];
   if (btc && rate !== null) {
-    for (const move of [0.01, 0.005]) { const h = pairHedgeCost(btc, rate, move); paths.push(['Paper 多空对冲 · 波动 ' + move * 100 + '% 一起平', h.costPerPaper, `每轮成本 ${number(h.cost, 2)} U / 铸 ${compact(h.mintedPaper)}；无 HL 费用与资金费`]); }
+    for (const move of [0.01, 0.005]) { const h = pairHedgeCost(btc, rate, move); paths.push(['Paper 多空对冲 · 波动 ' + move * 100 + '% 一起平', h.costPerPaper, `每轮成本 ${number(h.cost, 2)} U / 铸 ${compact(h.mintedPaper)}，没有 HL 费用和资金费`]); }
   }
   if (plan?.scenarios) {
     const prob = Number($('lossProbability').value) / 100, [loss, win] = plan.scenarios;
-    if (prob > 0 && prob <= 1 && loss.mintedPaper > 0) paths.push([`HL 对冲 · 当前计算器 ${plan.config.paperLeverage}x`, Math.max(0, -(prob * loss.pnl + (1 - prob) * win.pnl)) / (prob * loss.mintedPaper), `按输入 ${number(prob * 100, 0)}% 亏损概率；另有两腿排队敞口`]);
+    if (prob > 0 && prob <= 1 && loss.mintedPaper > 0) paths.push([`HL 对冲 · 当前计算器 ${plan.config.paperLeverage}x`, Math.max(0, -(prob * loss.pnl + (1 - prob) * win.pnl)) / (prob * loss.mintedPaper), `按输入 ${number(prob * 100, 0)}% 亏损概率，两腿排队时还有敞口`]);
   }
-  if (!paths.some(([name]) => name.startsWith('HL 对冲'))) paths.push(['HL 对冲 · 当前计算器', null, '保留测算；当前参数或来源不足']);
+  if (!paths.some(([name]) => name.startsWith('HL 对冲'))) paths.push(['HL 对冲 · 当前计算器', null, '参数或数据不够，没法算']);
   $('pathCompare').replaceChildren(...paths.map(([name, cost, note]) => { const tr = el('tr', undefined, name.startsWith('HL 对冲') ? 'inactive-path' : undefined); [name, costFresh ? paperUnitMoney(cost) : '参数过期 / 不可用', note].forEach(x => tr.append(el('td', x))); return tr; }));
   $('pathTable').replaceChildren(...paths.map(([name, cost, note]) => {
     const g = breakEvenGrowth(cost, k), tr = el('tr', undefined, name.startsWith('HL 对冲') ? 'inactive-path' : undefined);
-    [name, paperUnitMoney(cost), g === null && profitHistoryState !== 'ready' ? missing : breakEvenGrowthLabel(g), note].forEach((x, i) => { const td = el('td', x); if (i === 2 && g !== null) td.title = t('模型原始倍数：' + String(g) + '；假设收入比率不变，非收益预测'); tr.append(td); }); return tr;
+    [name, paperUnitMoney(cost), g === null && profitHistoryState !== 'ready' ? missing : breakEvenGrowthLabel(g), note].forEach((x, i) => { const td = el('td', x); if (i === 2 && g !== null) td.title = t('原始倍数：' + String(g) + '；前提是收入比率不变，不是收益预测'); tr.append(td); }); return tr;
   }));
   set('pathState', window.available ? '48 小时加权 · 12 小时半衰期 · ' + (window.estimatedHours ? '估算' : '实测') : missing + ' · 不外推');
   set('burnHeading', '1000 U · 50% 胜率 · 最小名义 ' + number(s.trading?.minimumOpenNotional, 0) + ' U');
@@ -201,9 +201,9 @@ function renderPlan() {
 
 function renderHistory() {
   const queues = history.filter(r => Number.isFinite(r.execution_queued));
-  set('executionHistory', queues.length ? `当前历史区间有 ${queues.length} 个下单队列样本，等待笔数 ${number(Math.min(...queues.map(r => r.execution_queued)), 0)}–${number(Math.max(...queues.map(r => r.execution_queued)), 0)}；最后一条 ${time(queues.at(-1).execution_source_at)}。CSV 含队列字段。` : '本区间尚无下单队列历史；旧样本的缺失值没有补成零。');
+  set('executionHistory', queues.length ? `本区间 ${queues.length} 条排队记录，等待 ${number(Math.min(...queues.map(r => r.execution_queued)), 0)}–${number(Math.max(...queues.map(r => r.execution_queued)), 0)} 笔，最新 ${time(queues.at(-1).execution_source_at)}。CSV 里也有。` : '这段时间没有排队记录，不是 0 笔');
   const valid = history.filter(r => r.paper_supply !== null && Number.isFinite(r.paper_supply));
-  set('historyState', history.length ? history.length + ' 个样本 · ' + time(history[0].collected_at) + ' 起' : '还没有历史样本');
+  set('historyState', history.length ? history.length + ' 个样本 · ' + time(history[0].collected_at) + ' 起' : '暂无历史数据');
   if (valid.length >= 2) {
     const first = valid[0], last = valid.at(-1); set('dilution', first.paper_supply > 0 ? precise((last.paper_supply / first.paper_supply - 1) * 100, 3) + '%' : '不可用');
     const r = history.filter(x => x.reward_accumulator !== null);
@@ -216,7 +216,7 @@ function renderHistory() {
 async function refresh() {
   if (refreshing) return; refreshing = true;
   try { const response = await fetch('/api/live', { cache: 'no-store', signal: AbortSignal.timeout(25000) }); if (!response.ok) throw new Error('API unavailable'); snapshot = await response.json(); if (snapshot.lpRiskDeferred) snapshot.lpRisk = lpDrainRisk(snapshot); networkHealthy = true; render(); drawExposure(); }
-  catch { networkHealthy = false; $('connection').className = 'status bad'; set('connection', '连接失败'); set('notice', '连接失败。旧值仅供查看，方案已经阻止；恢复后重新计算。'); renderPlan(); }
+  catch { networkHealthy = false; $('connection').className = 'status bad'; set('connection', '连接失败'); set('notice', '连接断了，下面是旧数据，恢复后自动更新。'); renderPlan(); }
   finally { refreshing = false; }
 }
 async function refreshHistory() {
@@ -231,7 +231,7 @@ async function refreshHistory() {
     if (results[0].status === 'fulfilled') history = results[0].value;
     if (results[2].status === 'fulfilled') stored = results[2].value.snapshot;
     renderHistory(); renderPlan(); renderPath(); renderRisk();
-    const failure = results.find(r => r.status === 'rejected'); if (failure) set('historyState', '部分历史读取失败：' + failure.reason.message);
+    const failure = results.find(r => r.status === 'rejected'); if (failure) set('historyState', '部分历史加载失败：' + failure.reason.message);
   }
   catch (error) { set('historyState', error.message); }
   finally { historyRefreshing = false; }

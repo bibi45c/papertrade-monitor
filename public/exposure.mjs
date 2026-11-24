@@ -117,7 +117,7 @@ export function renderExposure({ series, snapshot, rangeDays, lang, time, $ }) {
   $('expBtc').textContent = signedUsd(cur?.btcNet); $('expBtcNote').textContent = legNote('BTC');
   $('expEth').textContent = signedUsd(cur?.ethNet); $('expEthNote').textContent = legNote('ETH');
   $('expTotal').textContent = signedUsd(cur?.total);
-  $('expTotalNote').textContent = fin(cur?.long) && fin(cur?.short) ? L(`总持仓 ${usd(cur.long + cur.short)}（多 ${usd(cur.long)} / 空 ${usd(cur.short)}）· 交易者整体赚钱时由 LP 兑付`, `Open interest ${usd(cur.long + cur.short)} (long ${usd(cur.long)} / short ${usd(cur.short)}) · paid by the LP when traders win`) : L('交易者整体赚钱时由 LP 兑付', 'Paid out of the LP when traders win as a whole');
+  $('expTotalNote').textContent = fin(cur?.long) && fin(cur?.short) ? L(`总持仓 ${usd(cur.long + cur.short)}（多 ${usd(cur.long)} / 空 ${usd(cur.short)}）· 交易者整体赚钱由 LP 赔`, `Open interest ${usd(cur.long + cur.short)} (long ${usd(cur.long)} / short ${usd(cur.short)}) · paid by the LP when traders win`) : L('交易者整体赚钱由 LP 赔', 'Paid out of the LP when traders win as a whole');
   const first = rows.find(r => fin(r.lp));
   $('expLp').textContent = usd(cur?.lp);
   $('expLpNote').textContent = first && fin(cur?.lp) ? L(`区间内 ${signedUsd(cur.lp - first.lp)}（${pct(cur.lp / first.lp - 1)}）`, `${signedUsd(cur.lp - first.lp)} over range (${pct(cur.lp / first.lp - 1)})`) : '—';
@@ -125,11 +125,11 @@ export function renderExposure({ series, snapshot, rangeDays, lang, time, $ }) {
   $('expTvl').textContent = usd(cur?.tvl);
   const book = snapshot?.sources?.traderBook?.ok ? snapshot.traderBook : null;
   $('expEffLp').textContent = book && fin(cur?.lp) ? usd(cur.lp - book.unrealizedPnl) : L('不可用', 'Unavailable');
-  $('expEffLpNote').textContent = book ? L(`交易者浮盈合计 ${signedUsd(book.unrealizedPnl)}（盈利账户 ${signedUsd(book.winners)} / 亏损 ${signedUsd(book.losers)}，${book.accounts} 个持仓账户）· 官方排行榜汇总`, `Trader unrealized PnL ${signedUsd(book.unrealizedPnl)} (winners ${signedUsd(book.winners)} / losers ${signedUsd(book.losers)}, ${book.accounts} open accounts) · official leaderboard`) : L('排行榜汇总不可用', 'Leaderboard total unavailable');
+  $('expEffLpNote').textContent = book ? L(`交易者浮盈亏 ${signedUsd(book.unrealizedPnl)}（赚 ${signedUsd(book.winners)} / 亏 ${signedUsd(book.losers)}，${book.accounts} 户）· 来自官方排行榜`, `Trader unrealized PnL ${signedUsd(book.unrealizedPnl)} (winners ${signedUsd(book.winners)} / losers ${signedUsd(book.losers)}, ${book.accounts} open accounts) · official leaderboard`) : L('排行榜数据拿不到', 'Leaderboard total unavailable');
   $('expTvlNote').textContent = firstTvl && fin(cur?.tvl) ? L(`区间内 ${signedUsd(cur.tvl - firstTvl.tvl)}`, `${signedUsd(cur.tvl - firstTvl.tvl)} over range`) : '—';
 
   const svg = $('exposureChart'); svg.replaceChildren();
-  $('exposureState').textContent = !series ? L('历史序列不可用（仅显示当前值）', 'History series unavailable (current values only)')
+  $('exposureState').textContent = !series ? L('历史数据拿不到，只显示当前值', 'History series unavailable (current values only)')
     : rows.length ? L(`${rows.length} 个点 · ${time(rows[0].t)} 起`, `${rows.length} points · from ${time(rows[0].t)}`) : L('区间内没有数据', 'No data in range');
   if (rows.length < 2) { $('exposureMove').textContent = ''; return; }
 
@@ -160,7 +160,7 @@ export function renderExposure({ series, snapshot, rangeDays, lang, time, $ }) {
   if (panels[0].top + panels[0].h - s1.y(0) > 18) svg.append(text(X0 - 6, panels[0].top + panels[0].h, pct(s1.lo, 0), 'end'));
   const lastPct = q => q.pts.length ? pct(q.pts.at(-1).v, 1) : '—';
   svg.append(text(X1 - 4, panels[0].top - 6, `ETH ${lastPct(ethP)}`, 'end', '#7fb2f0'), text(X1 - 84, panels[0].top - 6, `BTC ${lastPct(btcP)}`, 'end', '#f0a35e'),
-    text(X0, panels[0].top - 6, L('价格涨跌（相对区间起点）', 'Price change from range start')));
+    text(X0, panels[0].top - 6, L('涨跌幅（相对起点）', 'Price change from range start')));
 
   // 2. Scissors: total long vs total short notional (BTC + ETH); the shaded gap is the net exposure the LP carries.
   //    Rolling median sized to the range; axis from the 1st–99th percentile, spikes beyond it clipped.
@@ -193,8 +193,8 @@ export function renderExposure({ series, snapshot, rangeDays, lang, time, $ }) {
   svg.append(...line(rows.map((r, i) => ({ t: r.t, v: sm.long[i] })), x, s2.y, '#f0a35e', 1.5), ...line(rows.map((r, i) => ({ t: r.t, v: sm.short[i] })), x, s2.y, '#7fb2f0', 1.5));
   svg.append(text(X0 - 6, panels[1].top + 10, usd(s2.hi), 'end'), text(X0 - 6, panels[1].top + panels[1].h, '$0', 'end'));
   svg.append(text(X1 - 4, panels[1].top - 6, L('空头持仓', 'Short OI'), 'end', '#7fb2f0'), text(X1 - 70, panels[1].top - 6, L('多头持仓', 'Long OI'), 'end', '#f0a35e'),
-    text(X1 - 136, panels[1].top - 6, L('阴影 = 净敞口（橙 = 净多，蓝 = 净空）', 'Shaded gap = net exposure (orange net long, blue net short)'), 'end'));
-  if (clipped) svg.append(text(X0, panels[1].top - 6, L('坐标按 1%–99% 分位，尖峰截断', '1st–99th percentile axis; spikes clipped')));
+    text(X1 - 136, panels[1].top - 6, L('阴影是净敞口：橙色净多，蓝色净空', 'Shaded gap = net exposure (orange net long, blue net short)'), 'end'));
+  if (clipped) svg.append(text(X0, panels[1].top - 6, L('纵轴取 1%–99% 分位，尖峰截掉', '1st–99th percentile axis; spikes clipped')));
 
   // 3. LP bankroll with the on-chain flat-zone threshold.
   const lps = rows.map(r => r.lp).filter(fin);
@@ -222,7 +222,7 @@ export function renderExposure({ series, snapshot, rangeDays, lang, time, $ }) {
   const m = largestMove(rows);
   const events = EVENTS.filter(e => e.t >= t0 && e.t <= t1).map(e => L('标记：', 'Marked: ') + e[zh ? 'zh' : 'en'] + L(`，区块 ${e.block}。`, `, block ${e.block}.`)).join(' ');
   $('exposureMove').textContent = (m ? L(
-    `区间内最大单边（12 小时内）：${time(m.from.t)} → ${time(m.to.t)}，BTC ${pct(m.move)}（${Math.round(m.from.btcPx).toLocaleString('en-US')} → ${Math.round(m.to.btcPx).toLocaleString('en-US')}）。起点交易者 BTC 净持仓 ${signedUsd(m.from.btcNet)}、合计 ${signedUsd(m.from.total)}；同期 LP ${signedUsd(m.lpDelta)}，窗口内最低 ${usd(m.lpMin)}。`,
+    `区间内 12 小时最大单边：${time(m.from.t)} → ${time(m.to.t)}，BTC ${pct(m.move)}（${Math.round(m.from.btcPx).toLocaleString('en-US')} → ${Math.round(m.to.btcPx).toLocaleString('en-US')}）。起点 BTC 净持仓 ${signedUsd(m.from.btcNet)}、合计 ${signedUsd(m.from.total)}，同期 LP ${signedUsd(m.lpDelta)}，最低 ${usd(m.lpMin)}。`,
     `Largest one-way move in range (within 12h): ${time(m.from.t)} → ${time(m.to.t)}, BTC ${pct(m.move)} (${Math.round(m.from.btcPx).toLocaleString('en-US')} → ${Math.round(m.to.btcPx).toLocaleString('en-US')}). Trader BTC net at start ${signedUsd(m.from.btcNet)}, total ${signedUsd(m.from.total)}; LP ${signedUsd(m.lpDelta)} over the window, low ${usd(m.lpMin)}.`) : '') + (events ? ' ' + events : '');
 
   // Hover readout (raw bucket values, not the smoothed line).

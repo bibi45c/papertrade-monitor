@@ -46,7 +46,7 @@ export function renderSupplyChart({ svg, tip, rows, lang, time }) {
     const s2 = scale(div.map(p => p.v).concat(0), panels[1]);
     svg.append(...polyline(div, x, s2.y, '#e5c489', gapMs, 1.8, { base: panels[1].top + panels[1].h, color: '#e5c48914' }));
     svg.append(el('text', { x: X0 - 6, y: panels[1].top + 10, 'text-anchor': 'end' }, s2.hi.toPrecision(3) + ' U'), el('text', { x: X0 - 6, y: panels[1].top + panels[1].h, 'text-anchor': 'end' }, '0 U'));
-    svg.append(el('text', { x: X1 - 4, y: panels[1].top - 8, 'text-anchor': 'end', fill: '#e5c489' }, L(`每 1 万枚 PAPER 累计分红 · 区间 ${div.at(-1).v.toPrecision(3)} U`, `Cumulative dividends per 10,000 PAPER · ${div.at(-1).v.toPrecision(3)} U in range`)));
+    svg.append(el('text', { x: X1 - 4, y: panels[1].top - 8, 'text-anchor': 'end', fill: '#e5c489' }, L(`每万枚累计分红 · 区间 ${div.at(-1).v.toPrecision(3)} U`, `Cumulative dividends per 10,000 PAPER · ${div.at(-1).v.toPrecision(3)} U in range`)));
   }
 
   // Singapore-time ticks.
@@ -65,7 +65,7 @@ export function renderSupplyChart({ svg, tip, rows, lang, time }) {
     const s = nearest(supply, t), d = nearest(div, t);
     cursor.setAttribute('x1', x(s.t)); cursor.setAttribute('x2', x(s.t)); cursor.setAttribute('visibility', 'visible');
     tip.hidden = false; tip.textContent = '';
-    for (const row of [time(s.t), L('总供应 ', 'Supply ') + s.v.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' PAPER', ...(d ? [L('累计分红 ', 'Cumulative dividends ') + d.v.toPrecision(4) + L(' U / 1 万枚', ' U per 10,000')] : [])]) { const n = document.createElement('div'); n.textContent = row; tip.append(n); }
+    for (const row of [time(s.t), L('总供应 ', 'Supply ') + s.v.toLocaleString('en-US', { maximumFractionDigits: 0 }) + ' PAPER', ...(d ? [L('累计分红 ', 'Cumulative dividends ') + d.v.toPrecision(4) + L(' U / 万枚', ' U per 10,000')] : [])]) { const n = document.createElement('div'); n.textContent = row; tip.append(n); }
     const left = x(s.t) / 1000 * box.width; tip.style.left = Math.min(box.width - tip.offsetWidth - 8, Math.max(8, left + 12)) + 'px';
   };
   svg.onmouseleave = () => { tip.hidden = true; cursor.setAttribute('visibility', 'hidden'); };

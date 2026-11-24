@@ -55,7 +55,7 @@ test('multisig batch alerts group builder approvals and link the builders and tr
   const [zh] = build([{ ...event, call }], 'zh');
   assert.equal(zh.title, '多签提交：批量排程 6 项');
   assert.equal(zh.parts[0], '批准 Hyperliquid builder approveBuilder(地址) ×6');
-  assert.ok(zh.parts.includes(' · 扫描到的日志中未见执行记录'));
+  assert.ok(zh.parts.includes(' · 已扫日志里没有执行记录'));
   const [en] = build([{ ...event, call }], 'en');
   assert.equal(en.title, 'Multisig submitted: batch schedule of 6 operations');
   assert.equal(en.parts[0], 'Approve Hyperliquid builder approveBuilder(address) ×6');
@@ -100,7 +100,7 @@ test('older batch alerts show the inferred count or omit it and keep the transac
   const build = alerts(t);
   const [zh] = build([{ ...event, call: relabelCall({ selector: call.selector, args: call.args }) }], 'zh');
   assert.equal(zh.title, '多签提交：批量排程 6 项');
-  assert.equal(zh.parts[0], '共 6 项，明细未存或未能解出，见交易');
+  assert.equal(zh.parts[0], '共 6 项，明细没存或解不出，见交易');
   const [en] = build([{ ...event, call: relabelCall({ selector: call.selector, args: call.args }) }], 'en');
   assert.equal(en.parts[0], '6 operations; details not stored or not decoded, see the transaction');
   const [unknown] = build([{ ...event, call: { selector: '8f2a0bb0' } }], 'en');

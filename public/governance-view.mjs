@@ -23,7 +23,7 @@ function describe(o, lang) {
   const zh = lang === 'zh', L = (a, b) => zh ? a : b, args = o.args ?? [];
   switch (o.selector) {
     case '12baae3b': return { title: L('调整 Tokenomics 分配曲线', 'Adjust the Tokenomics allocation curve'), parts: [zh ? (o.description ?? args.join(', ')) : `Staker allocation cap (LP above it is pushed to stakers) 5,000,000 → ${Number(args[1] ?? 0).toLocaleString('en-US')} U; the other three parameters equal current values`] };
-    case '8a99d586': { const sec = Number(args[0]); return { title: L('缩短 timelock 最短延迟', 'Shorten the timelock minimum delay'), parts: [L(`改为 ${sec.toLocaleString('en-US')} 秒 = ${sec / 86400} 天（原 7 天）；之后上新、改参数、升级只需提前 ${sec / 86400} 天排程`, `Set to ${sec.toLocaleString('en-US')} s = ${sec / 86400} day (was 7 days); listings, parameter changes and upgrades now need only ${sec / 86400} day notice`)], warn: true }; }
+    case '8a99d586': { const sec = Number(args[0]); return { title: L('缩短 timelock 最短延迟', 'Shorten the timelock minimum delay'), parts: [L(`改为 ${sec.toLocaleString('en-US')} 秒（${sec / 86400} 天，原 7 天），以后上新、改参数、升级只要提前 ${sec / 86400} 天排程`, `Set to ${sec.toLocaleString('en-US')} s = ${sec / 86400} day (was 7 days); listings, parameter changes and upgrades now need only ${sec / 86400} day notice`)], warn: true }; }
     case '99a88ec4': return { title: L('升级代理合约', 'Upgrade a proxy contract'), parts: [L('代理 ', 'Proxy '), { addr: toAddress(args[0]) }, L(' → 新实现 ', ' → new implementation '), { addr: toAddress(args[1]) }] };
     case '54dc2a02': return { title: L('批准 Hyperliquid builder', 'Approve a Hyperliquid builder'), parts: [L('builder ', 'Builder '), { addr: toAddress(args[0]) }, L('，可对该账户的 Hyperliquid 下单收取 builder 费', ' may charge builder fees on this account\'s Hyperliquid orders')] };
     default: return { title: o.label ?? L('未知操作', 'Unknown operation'), parts: [(o.display ?? args).join(', ')] };
@@ -42,7 +42,7 @@ export function renderGovernanceTable({ ops, now, time, applied, lang, number, a
   const zh = lang === 'zh', L = (a, b) => zh ? a : b, body = document.getElementById('govTable');
   if (!ops.length) {
     const tr = document.createElement('tr'), td = document.createElement('td');
-    td.colSpan = 4; td.textContent = available ? L('没有排程操作', 'No scheduled operations') : L('治理数据不可用，不能当作没有排程', 'Governance data unavailable; this does not mean nothing is scheduled');
+    td.colSpan = 4; td.textContent = available ? L('没有排程操作', 'No scheduled operations') : L('治理数据拿不到，不等于没有排程', 'Governance data unavailable; this does not mean nothing is scheduled');
     tr.append(td); body.replaceChildren(tr); return;
   }
   const state = o => operationOutcome(o) || applied(o) ? 2 : o.readyAt <= now ? 1 : 0;
