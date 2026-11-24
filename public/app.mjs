@@ -1,4 +1,4 @@
-import { makePlan, emissionRate, executionQueueStatus, dividendWindow48, breakEvenGrowth, breakEvenGrowthLabel, pairHedgeCost, burnEstimate, lpDrainRisk } from './model.mjs';
+import { makePlan, emissionRate, executionQueueStatus, dividendWindow48, profitWindowSources, pickNewer, breakEvenGrowth, breakEvenGrowthLabel, pairHedgeCost, burnEstimate, lpDrainRisk } from './model.mjs';
 import { FIELDS, TABLES, readProfitCache, writeProfitCache, validProfitCache } from './profit-cache.mjs';
 import { language, initializeLanguage, translateMessage as t } from './i18n.mjs';
 import { renderExposure, mergeSeries } from './exposure.mjs';
@@ -7,7 +7,7 @@ import { buildAlerts, renderAlerts } from './alerts-view.mjs';
 import { renderSupplyChart } from './supply-chart.mjs';
 initializeLanguage();
 const $ = id => document.getElementById(id);
-let snapshot = null, stored = null, plan = null, history = [], day = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
+let snapshot = null, stored = null, plan = null, history = [], refreshing = false, historyRefreshing = false, networkHealthy = false;
 let profitHistoryState = 'loading', profitCache = null, dividendRows = [], exposureSeries = null;
 try { profitCache = readProfitCache(localStorage); } catch {}
 const number = (value, digits = 2) => value === null || value === undefined || !Number.isFinite(value) ? '不可用' : value.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -81,7 +81,7 @@ function render() {
   renderPlan(); renderHistory(); renderPath(); renderRisk();
 }
 
-// 风险与规则变更：治理排程与网页版本来自云端定时记录（/api/latest），其余用实时快照。
+// 风险与规则变更：治理排程与网页版本取 /api/live 与 /api/latest 中较新记录，其余用实时快照。
 function drawExposure() {
   try { renderExposure({ series: exposureSeries, snapshot, rangeDays: Number($('exposureRange').value), lang: language, time, $ }); } catch (error) { $('exposureState').textContent = String(error.message ?? error); }
 }
@@ -100,13 +100,13 @@ async function loadExposure() {
 }
 function renderRisk() {
   if (!snapshot) return;
-  const s = snapshot, g = stored?.governance ?? s.governance, now = Date.now(), pct = v => v === null || v === undefined ? '5% 内不会' : number(v * 100, 2) + '%';
+  const s = snapshot, g = pickNewer(s.governance, stored?.governance), now = Date.now(), pct = v => v === null || v === undefined ? '5% 内不会' : number(v * 100, 2) + '%';
   const ops = (g?.operations ?? []).filter(o => Number.isFinite(o.readyAt)), applied = o => o.resolvedBlock || (o.selector === '12baae3b' && Number(o.args?.[1]) > 0 && s.paper?.cap >= Number(o.args[1])), pending = ops.filter(o => !applied(o));
   set('govCount', g ? String(pending.length) : '不可用');
   const next = pending.map(o => o.readyAt).sort((a, b) => a - b)[0];
   set('govNote', !g ? '治理扫描未接入（等待云端定时记录）' : (g.stale || now - g.at > 10 * 60000 ? '扫描失败或过期，沿用已知操作 · ' : '') + (next ? '最早 ' + time(next) + ' 可执行（' + number((next - now) / 86400000, 1) + ' 天）' : '已知记录没有待执行排程') + ' · 已检查到区块 ' + (g.lastScannedBlock ?? '—') + (g.gaps?.length ? ' · ' + g.gaps.length + ' 段历史缺口待补扫，不能认定事件齐全' : ''));
   renderGovernanceTable({ ops, now, time, applied, lang: language, number, available: !!g });
-  const web = stored?.web;
+  const web = pickNewer(s.web, stored?.web);
   const alerts = buildAlerts({ listing: s.listing, web, events: g?.recentEvents, lang: language, time, now });
   set('listingCount', s.listing ? String(alerts.length) : '不可用');
   set('listingNote', s.listing ? '当前市场：' + s.listing.symbols.join('、') : '交易参数不可用');
@@ -124,14 +124,14 @@ function renderRisk() {
 
 function renderPath() {
   if (!snapshot) return;
-  const s = snapshot, rate = emissionRate(s.paper), btc = s.trading?.instruments?.find(i => i.symbol === 'BTC');
-  const hourlySource = s.sources.protocolHistory, hourlyFresh = hourlySource?.ok && Date.now() - hourlySource.at <= 10 * 60000;
-  const minuteAt = dividendRows.at(-1)?.collected_at, indexFresh = profitHistoryState === 'ready' && Number.isFinite(minuteAt) && Date.now() - minuteAt <= 180000;
-  const window = dividendWindow48(indexFresh ? dividendRows : [], hourlyFresh ? s.protocolHours ?? [] : []);
-  const sampleAt = Math.max(indexFresh ? minuteAt : 0, hourlyFresh ? hourlySource.at : 0), k = window.incomePerNewPaper;
+  const s = snapshot, now = Date.now(), rate = emissionRate(s.paper), btc = s.trading?.instruments?.find(i => i.symbol === 'BTC');
+  const sources = profitWindowSources({ dividendRows, profitHistoryState, protocolHours: s.protocolHours ?? [], hourlySource: s.sources.protocolHistory, now });
+  const window = dividendWindow48(sources.rows, sources.protocolHours, now);
+  const sampleAt = sources.sampleAt, k = window.incomePerNewPaper;
   if (!window.available && showProfitCache()) return;
   const missing = profitHistoryState === 'loading' ? '正在读取历史…' : profitHistoryState === 'failed' ? '历史读取失败' : '样本不足';
-  set('profitFreshness', '完整小时窗口：' + time(window.startAt) + ' — ' + time(window.endAt) + ' · 有效 ' + window.validHours + '/48 小时 · 加权覆盖 ' + number(window.coverage * 100, 1) + '%' + (sampleAt ? ' · 数据更新 ' + time(sampleAt) : ' · 等待数据'));
+  const freshnessNote = sampleAt ? ' · 数据更新 ' + time(sampleAt) : profitHistoryState === 'ready' && sources.staleAt ? ' · 数据过期，最近更新 ' + time(sources.staleAt) : ' · 等待数据';
+  set('profitFreshness', '完整小时窗口：' + time(window.startAt) + ' — ' + time(window.endAt) + ' · 有效 ' + window.validHours + '/48 小时 · 加权覆盖 ' + number(window.coverage * 100, 1) + '%' + freshnessNote);
   set('incomePerNew', k === null ? missing : paperUnitPrecise(k));
   set('incomePerNewNote', '48 小时加权官方已分配收入 ÷ 加权新铸 PAPER；不含待分配奖励');
   set('stakerShare', k !== null && rate !== null ? number(k * rate * 100, 1) + '%' : '不可用');
@@ -162,7 +162,7 @@ function renderPath() {
   $('burnTable').replaceChildren(...(burns.length ? burns.map(([name, b]) => { const tr = el('tr'); (b ? [name, money(b.margin), number(b.distance * 100, 3) + '%', money(b.expectedLossPerTrade), paperUnitMoney(b.costPerPaper), compact(b.expectedPaper), number(b.expectedTrades, 0)] : [name, '不可用', '', '', '', '', '']).forEach(x => tr.append(el('td', x))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', '等待铸币率与交易参数'); td.colSpan = 7; tr.append(td); return tr; })()]));
   const hours = s.protocolHours;
   $('protocolHours').replaceChildren(...(hours?.length ? [...hours].reverse().map(h => { const tr = el('tr'); [time(h.startMs).slice(0, -3) + (h.partial ? '（进行中）' : ''), compact(h.revenue) + ' U', compact(h.minted), h.revenuePerNewPaper === null ? '—' : paperUnitPrecise(h.revenuePerNewPaper), h.revenuePerPaperHour === null ? '—' : paperUnitPrecise(h.revenuePerPaperHour), compact(h.traderPnl) + ' U', compact(h.liquidationNotional) + ' U'].forEach((x, i) => tr.append(el('td', x, i === 5 ? pnlClass(h.traderPnl) : undefined))); return tr; }) : [(() => { const tr = el('tr'), td = el('td', s.sources.protocolHistory?.ok ? '尚无交易小时' : '官方小时统计不可用'); td.colSpan = 7; tr.append(td); return tr; })()]));
-  if (window.available && costFresh) rememberProfit(sampleAt);
+  if (window.available && costFresh && Number.isFinite(sampleAt)) rememberProfit(sampleAt);
 }
 
 function renderPlan() {
@@ -227,11 +227,9 @@ async function refreshHistory() {
     const selectedHours = Number($('historyHours').value);
     const minute = read('/api/dividend-history').then(value => { if (!Array.isArray(value.rows)) throw new Error('分红历史格式异常'); dividendRows = value.rows; profitHistoryState = 'ready'; renderPath(); return value.rows; }).catch(error => { profitHistoryState = 'failed'; renderPath(); throw error; });
     const selected = rows(selectedHours);
-    const daily = selectedHours === 24 ? selected : rows(24);
-    const results = await Promise.allSettled([selected, minute, daily, read('/api/latest')]);
+    const results = await Promise.allSettled([selected, minute, read('/api/latest')]);
     if (results[0].status === 'fulfilled') history = results[0].value;
-    if (results[2].status === 'fulfilled') day = results[2].value;
-    if (results[3].status === 'fulfilled') stored = results[3].value.snapshot;
+    if (results[2].status === 'fulfilled') stored = results[2].value.snapshot;
     renderHistory(); renderPlan(); renderPath(); renderRisk();
     const failure = results.find(r => r.status === 'rejected'); if (failure) set('historyState', '部分历史读取失败：' + failure.reason.message);
   }

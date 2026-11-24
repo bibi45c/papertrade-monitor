@@ -17,6 +17,7 @@ test('translated financial messages preserve numbers, units and estimate qualifi
   assert.equal(translateMessage(message, 'en'), 'Estimated (includes hourly-statistic fallback) · Measured 28 / Estimated 20 hours · Mean across valid hours 0.28 U/hour; not a future return forecast');
   assert.equal(translateMessage('回本门槛过高（>100 倍）', 'en'), 'Break-even threshold too high (>100×)');
   assert.equal(translateMessage('US CPI（9 月）', 'en'), 'US CPI (Sep)');
+  assert.equal(translateMessage('完整小时窗口：10:00 — 10:00 · 有效 0/48 小时 · 加权覆盖 0.0% · 数据过期，最近更新 08:00', 'en'), 'Completed-hour window: 10:00 — 10:00 · Valid 0/48 hours · Weighted coverage 0.0% · Stale data, last updated 08:00');
 });
 
 test('English HTML is usable before scripts and every static locale key has a translation', () => {
