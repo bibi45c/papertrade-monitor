@@ -50,6 +50,8 @@ function batchDetails(batch, L, lang) {
       shown.forEach((addr, i) => parts.push(i ? ', ' : ' ', link('address/' + addr, short(addr), addr)));
       if (extra) parts.push(shown.length ? L(` 等 ${extra} 个`, ` and ${extra} more`) : L('（地址见交易）', ' (addresses in the transaction)'));
       remaining -= shown.length;
+      const unread = calls.length - builders.length;
+      if (unread) parts.push(L(`（${unread} 项参数无法解析，见交易）`, ` (${unread} with unreadable arguments, see the transaction)`));
     }
     const targetLabel = where && where !== target ? translateMessage(where, lang) : short(target);
     parts.push(L('（目标 ', ' (target '), link('address/' + target, targetLabel, target), L('）', ')'));

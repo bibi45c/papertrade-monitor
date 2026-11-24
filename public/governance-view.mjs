@@ -32,6 +32,7 @@ function describe(o, lang) {
 
 export function operationOutcome(o) {
   if (['executed', 'cancelled', 'unknown'].includes(o.outcome)) return o.outcome;
+  if (o.resolvedBlock != null && o.resolvedBlock === o.scheduledBlock) return 'unknown'; // older record without log order
   if (o.resolvedTopic === '0x2a08801cf3674ab09756ae78a3a4833813465af6af958136b360eab6b71c8952') return 'executed';
   if (o.resolvedTopic === '0xcf0f63b97f3387253cbc0bde884f975df77e39184dc3280c2c81be495f58eef4') return 'cancelled';
   return o.resolvedBlock == null ? null : 'unknown';

@@ -15,6 +15,9 @@ test('operation outcome prefers the explicit result and recognizes legacy topics
   assert.equal(operationOutcome({ resolvedBlock: 10, resolvedTopic: '0xunknown' }), 'unknown');
   assert.equal(operationOutcome({ resolvedBlock: 10 }), 'unknown');
   assert.equal(operationOutcome({}), null);
+  // Older records keep no log order: a schedule and an ending in one block cannot be told apart.
+  assert.equal(operationOutcome({ scheduledBlock: 25, resolvedBlock: 25, resolvedTopic: cancelled.topics[0] }), 'unknown');
+  assert.equal(operationOutcome({ scheduledBlock: 25, resolvedBlock: 25, resolvedLogIndex: 1, outcome: 'cancelled', resolvedTopic: cancelled.topics[0] }), 'cancelled');
 });
 
 function createElement() {
@@ -76,6 +79,15 @@ test('batch alerts separate targets, limit builder links and prefer the multisig
   assert.ok(!alert.parts.includes(' · no execution seen in scanned logs'));
   assert.equal(alert.parts.filter(p => p.href?.includes('/address/')).length, 8);
   assert.ok(alert.parts.some(p => p.textContent === 'Timelock (1-day minimum delay)'));
+});
+
+test('builders that cannot be read are reported, never invented', t => {
+  const build = alerts(t);
+  const broken = { ...call.batch[0], args: [], display: [] }, oversized = { ...call.batch[0], args: [String(2n ** 200n)] };
+  const [alert] = build([{ ...event, call: relabelCall({ ...call, batch: [call.batch[0], broken, oversized] }) }], 'en');
+  assert.equal(alert.parts[0], 'Approve Hyperliquid builder approveBuilder(address) ×3');
+  assert.equal(alert.parts.filter(p => p.href?.includes('/address/')).length, 2); // one builder + the target
+  assert.ok(alert.parts.includes(' (2 with unreadable arguments, see the transaction)'));
 });
 
 test('builder links beyond the first six are counted', t => {

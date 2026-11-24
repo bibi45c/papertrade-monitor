@@ -301,6 +301,48 @@ test('rescanned events replace older stored ones', async () => {
   assert.deepEqual(state.recentEvents.map(e => e.kind), ['operationExecuted']);
 });
 
+test('a damaged outer event stays pending so a later scan can recover it', async () => {
+  const damaged = [submittedBatch.data.slice(0, -10), submittedBatch.data.replace(/^0x.{64}.{64}/, m => m.slice(0, 66) + 'f'.repeat(64)), submittedBatch.data.slice(0, 2 + 64 * 3) + 'zz' + submittedBatch.data.slice(2 + 64 * 3 + 2)];
+  for (const data of damaged) {
+    assert.throws(() => decodeLog({ ...submittedBatch, data }), /Malformed multisig event/);
+    const state = await scanLogs([atBlock({ ...submittedBatch, data }, 20)], 30, { lastScannedBlock: 10, operations: [] });
+    assert.deepEqual(state.gaps, [[11, 30]]);
+    assert.equal(state.readErrors.length > 0, true);
+    const recovered = await scanLogs([atBlock(submittedBatch, 20)], 31, state);
+    assert.deepEqual(recovered.gaps, []);
+    assert.equal(recovered.recentEvents[0].call.batch.length, 6);
+  }
+});
+
+test('a truncated argument is dropped instead of being shown as a full value', () => {
+  const [short] = describeCall(GOVERNANCE.timelock, singleBatch('54dc2a0201')).batch;
+  assert.deepEqual(short.args, []);
+  assert.deepEqual(relabelCall(short).display, []);
+});
+
+test('schedule and ending order survives mixed same-block events and missing log indices', async () => {
+  const at = (log, block, i) => ({ ...atBlock(log, block), logIndex: '0x' + i });
+  const id = KNOWN_OPERATIONS[0].id, unknown = { ...cancelled, topics: ['0x' + 'aa'.repeat(32), id] };
+  const initial = { lastScannedBlock: 10, operations: [{ ...KNOWN_OPERATIONS[0], scheduledBlock: 10, scheduledLogIndex: 5 }] };
+  const mixed = [at(cancelled, 25, 0), at(scheduled, 25, 1), at(unknown, 25, 2)];
+  for (const logs of [mixed, [...mixed].reverse()]) assert.notEqual((await scanLogs(logs, 30, initial)).operations[0].outcome, 'cancelled');
+  // A schedule without a log index must not inherit the previous one.
+  const noIndex = await scanLogs([atBlock(scheduled, 25), at(cancelled, 25, 3)], 30, initial);
+  assert.equal(noIndex.operations[0].outcome, 'cancelled');
+  assert.equal(Object.hasOwn(noIndex.operations[0], 'scheduledLogIndex'), false);
+  assert.equal(Object.hasOwn(decodeLog({ ...cancelled, logIndex: null }), 'logIndex'), false);
+  const ended = { ...KNOWN_OPERATIONS[0], scheduledBlock: 10, resolvedBlock: 25, resolvedTopic: cancelled.topics[0] };
+  const upgraded = await scanLogs([at(cancelled, 25, 4)], 31, { lastScannedBlock: 30, gaps: [[25, 25]], operations: [ended] });
+  assert.equal(upgraded.operations[0].outcome, 'cancelled');
+  assert.equal(upgraded.operations[0].resolvedLogIndex, 4);
+  const again = await scanLogs([at(scheduled, 32, 0)], 32, upgraded);
+  for (const field of ['resolvedBlock', 'resolvedLogIndex', 'resolvedTopic', 'outcome']) assert.equal(Object.hasOwn(again.operations[0], field), false);
+});
+
+test('a single schedule wrapping a batch still shows the batch', () => {
+  assert.equal(describeCall(GOVERNANCE.timelock, scheduleCall(singleBatch('deadbeef'))).inner.batch.length, 1);
+});
+
 test('a malformed batch log still allows its block range to be marked covered', async () => {
   const data = replaceWord(batchData, 19, 2n ** 255n);
   const log = atBlock({ ...submittedBatch, data: '0x' + word(0) + word(64) + dynamicBytes(data) }, 11);

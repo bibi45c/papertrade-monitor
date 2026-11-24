@@ -150,7 +150,7 @@ function describeNestedCall(target, data, depth, includeBatch) {
   const words = [];
   for (let i = 0; i < (selector === '12baae3b' ? 4 : 6) && i * 64 < body.length; i++) {
     const w = word(body, i);
-    if (!/^[\da-f]+$/i.test(w)) break;
+    if (!/^[\da-f]{64}$/i.test(w)) break; // a truncated word is not a value
     words.push(w);
   }
   const call = { selector, label, where, args: selector === '12baae3b' ? words.map(usd) : words.map(w => big(w).toString()) };
@@ -165,7 +165,7 @@ function describeNestedCall(target, data, depth, includeBatch) {
 export function decodeScheduled(log) {
   const d = log.data.slice(2), len = Number(big(word(d, 4))), calldata = d.slice(5 * 64, 5 * 64 + len * 2);
   const target = toAddress(log.topics[2].slice(2));
-  return { id: log.topics[1], target, ...(log.logIndex === undefined ? {} : { scheduledLogIndex: Number(BigInt(log.logIndex)) }), readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeNestedCall(target, calldata, 0, false) };
+  return { id: log.topics[1], target, ...(log.logIndex == null ? {} : { scheduledLogIndex: Number(BigInt(log.logIndex)) }), readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeNestedCall(target, calldata, 0, false) };
 }
 
 export function decodeLog(log) {
@@ -180,10 +180,13 @@ export function decodeLog(log) {
   let call = null;
   if (kind === 'multisigSubmitted' || kind === 'multisigExecuted') {
     const target = log.topics[3] ? toAddress(log.topics[3].slice(2)) : null, d = log.data.slice(2);
-    const data = abiBytes(d, abiOffset(d, 64, 2 * 64));
-    if (target && data?.length >= 8) call = { target, ...describeCall(target, data) };
+    const data = /^(?:[\da-f]{64})+$/i.test(d) ? abiBytes(d, abiOffset(d, 64, 2 * 64)) : null;
+    // The contract encodes this outer layer, so damage means a bad RPC response: throw and leave the range pending.
+    // Anything wrong inside the submitted calldata is user input and only degrades the description.
+    if (data === null) throw new Error('Malformed multisig event');
+    if (target && data.length >= 8) call = { target, ...describeCall(target, data) };
   }
-  return { kind, address, topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), ...(log.logIndex === undefined ? {} : { logIndex: Number(BigInt(log.logIndex)) }), tx: log.transactionHash, call };
+  return { kind, address, topic0: t0, topic1: log.topics[1] ?? null, block: Number(BigInt(log.blockNumber)), ...(log.logIndex == null ? {} : { logIndex: Number(BigInt(log.logIndex)) }), tx: log.transactionHash, call };
 }
 
 export function mergeBlockRanges(ranges) {
@@ -247,6 +250,7 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
     const old = ops.get(e.id);
     if (before(e.scheduledBlock, e.scheduledLogIndex, old?.scheduledBlock, old?.scheduledLogIndex)) continue;
     const op = { ...old, ...e };
+    if (e.scheduledLogIndex === undefined) delete op.scheduledLogIndex;
     if (before(op.resolvedBlock, op.resolvedLogIndex, op.scheduledBlock, op.scheduledLogIndex)) {
       for (const field of ['resolvedBlock', 'resolvedLogIndex', 'resolvedTopic', 'outcome']) delete op[field];
     }
