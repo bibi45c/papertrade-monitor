@@ -63,7 +63,7 @@ function render() {
   const compactQueue = !(q?.available && q.preview?.length);
   $('executionPanel').classList.toggle('compact', compactQueue);
   $('executionSummary').textContent = !q?.available ? (language === 'zh' ? '下单队列数据拿不到。' : 'Execution queue status unavailable.')
-    : language === 'zh' ? `等待 ${number(q.queuedIntents, 0)} 笔 / 已提交 ${number(q.submittedIntents, 0)} 笔 · 已提交 Gas 压力 ${number(q.saturationPct, 1)}% · 排队量约 ${number(q.capacityBlocks, 0)} 块。官方没给排队顺序，要等多久、自己排第几都看不到。`
+    : language === 'zh' ? `等待 ${number(q.queuedIntents, 0)} 笔 / 已提交 ${number(q.submittedIntents, 0)} 笔 · 已提交 Gas 压力 ${number(q.saturationPct, 1)}% · 合计约 ${number(q.capacityBlocks, 0)} 块容量。官方没给排队顺序，要等多久、自己排第几都看不到。`
     : `Queued ${number(q.queuedIntents, 0)} / submitted ${number(q.submittedIntents, 0)} globally · submitted gas pressure ${number(q.saturationPct, 1)}% · about ${number(q.capacityBlocks, 0)} blocks of capacity · no official order preview, so wait time is unknown; personal rank not connected.`;
   const aggregateFresh = networkHealthy && q?.available && Date.now() - q.sourceAt <= 15000;
   set('executionState', aggregateFresh && q.previewAvailable === false ? '全局数据正常 · 没有排队顺序' : !networkHealthy || !execution.fresh ? '过期 / 不可用' : execution.busy ? '队列拥堵' : '快照有效 · ' + age(q.sourceAt));
