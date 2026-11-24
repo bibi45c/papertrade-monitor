@@ -216,22 +216,27 @@ export function profitWindowSources({
 } = {}) {
   const rows = Array.isArray(dividendRows) ? dividendRows : [];
   const hours = Array.isArray(protocolHours) ? protocolHours : [];
-  let minuteAt = null;
-  for (const r of rows) if (Number.isFinite(r?.collected_at) && (minuteAt === null || r.collected_at > minuteAt)) minuteAt = r.collected_at;
+  // minuteAt: the collector is alive. indexAt: newest sample that really carries an index; only this one is reported as the data time.
+  let minuteAt = null, indexAt = null;
+  for (const r of rows) if (Number.isFinite(r?.collected_at)) {
+    if (minuteAt === null || r.collected_at > minuteAt) minuteAt = r.collected_at;
+    if (typeof r.reward_accumulator === 'string' && /^\d+$/.test(r.reward_accumulator) && (indexAt === null || r.collected_at > indexAt)) indexAt = r.collected_at;
+  }
   const hourlyAt = hourlySource?.ok && Number.isFinite(hourlySource.at) ? hourlySource.at : null;
   const freshAt = (at, maxAge) => at !== null && now - at <= maxAge && at <= now + 5000;
-  const indexFresh = profitHistoryState === 'ready' && freshAt(minuteAt, indexMaxAge);
+  const indexFresh = profitHistoryState === 'ready' && indexAt !== null && freshAt(minuteAt, indexMaxAge);
   const hourlyFresh = freshAt(hourlyAt, hourlyMaxAge);
   const activeTimestamps = [];
-  if (indexFresh) activeTimestamps.push(minuteAt);
+  if (indexFresh) activeTimestamps.push(indexAt);
   if (hourlyFresh && hours.length > 0) activeTimestamps.push(hourlyAt);
   const sampleAt = activeTimestamps.length ? Math.min(...activeTimestamps) : (hourlyFresh ? hourlyAt : null);
-  const knownTimestamps = [minuteAt, hourlyAt].filter(t => t !== null && t <= now + 5000);
+  const knownTimestamps = [indexAt, hourlyAt].filter(t => t !== null && t <= now + 5000);
   const staleAt = sampleAt === null && knownTimestamps.length ? Math.max(...knownTimestamps) : null;
   return {
     indexFresh,
     hourlyFresh,
     minuteAt,
+    indexAt,
     hourlyAt,
     sampleAt,
     staleAt,

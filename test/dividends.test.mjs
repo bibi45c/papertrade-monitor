@@ -92,6 +92,15 @@ test('stopped collection rejects stale dividend history and exposes honest stale
   assert.equal(failed.hourlyFresh, true);
   assert.equal(failed.sampleAt, now - 60000);
 });
+test('a snapshot without an index keeps the measured window but never refreshes the data time', () => {
+  const sampleNow = end + 30 * 60000, failedAt = sampleNow - 6 * 60000;
+  const src = profitWindowSources({ dividendRows: [...rows(), { collected_at: failedAt, reward_accumulator: null }], now: sampleNow });
+  assert.equal(src.indexFresh, true);
+  assert.equal(src.sampleAt, Math.max(...rows().map(r => r.collected_at)));
+  assert.equal(dividendWindow48(src.rows, [], sampleNow).measuredHours, 48);
+  const none = profitWindowSources({ dividendRows: [{ collected_at: failedAt, reward_accumulator: null }], now: sampleNow });
+  assert.equal(none.indexFresh, false); assert.equal(none.sampleAt, null); assert.equal(none.staleAt, null);
+});
 test('pickNewer selects the record with the newer finite timestamp and handles nulls', () => {
   assert.equal(pickNewer(null, null), null);
   assert.equal(pickNewer(undefined, null), null);
