@@ -42,6 +42,12 @@ export function livePoint(s) {
   return [s.collectedAt, s.balances?.lp ?? null, s.balances?.tvl ?? null, inst.BTC?.longOi ?? null, inst.BTC?.shortOi ?? null, inst.ETH?.longOi ?? null, inst.ETH?.shortOi ?? null, mid.BTC ?? null, mid.ETH ?? null, 2, 1, upnl];
 }
 
+// Chain read first, official API value when the chain read failed (same order as the LP card).
+export function lpThresholds(s) {
+  const pick = key => s?.sources?.tokenomics?.ok && fin(s?.tokenomics?.[key]) ? s.tokenomics[key] : s?.paper?.[key] ?? null;
+  return { cliff: pick('cliff'), cap: pick('cap') };
+}
+
 function derive(p) {
   const btcNet = fin(p[COLS.btcL]) && fin(p[COLS.btcS]) && fin(p[COLS.btcPx]) ? (p[COLS.btcL] - p[COLS.btcS]) * p[COLS.btcPx] : null;
   const ethNet = fin(p[COLS.ethL]) && fin(p[COLS.ethS]) && fin(p[COLS.ethPx]) ? (p[COLS.ethL] - p[COLS.ethS]) * p[COLS.ethPx] : null;
@@ -196,14 +202,16 @@ export function renderExposure({ series, snapshot, rangeDays, lang, time, $ }) {
     text(X1 - 136, panels[1].top - 6, L('阴影是净敞口：橙色净多，蓝色净空', 'Shaded gap = net exposure (orange net long, blue net short)'), 'end'));
   if (clipped) svg.append(text(X0, panels[1].top - 6, L('纵轴取 1%–99% 分位，尖峰截掉', '1st–99th percentile axis; spikes clipped')));
 
-  // 3. LP bankroll with the on-chain flat-zone threshold.
+  // 3. LP bankroll with the current on-chain thresholds. The axis always covers the allocation threshold.
   const lps = rows.map(r => r.lp).filter(fin);
-  const s3 = scale(lps, panels[2]);
-  const cliff = snapshot?.sources?.tokenomics?.ok && fin(snapshot?.tokenomics?.cliff) ? snapshot.tokenomics.cliff : snapshot?.paper?.cliff;
+  const { cliff, cap } = lpThresholds(snapshot);
+  const s3 = scale(lps.length && fin(cap) ? [...lps, cap] : lps, panels[2]);
   if (fin(cliff) && cliff > s3.lo && cliff < s3.hi) svg.append(hline(X0, X1, s3.y(cliff), '#f39c99', '4 4'), text(X0 + 4, s3.y(cliff) - 4, L(`${usd(cliff)} 平坦区阈值`, `${usd(cliff)} flat-zone threshold`), 'start', '#f39c99'));
+  if (lps.length && fin(cap)) svg.append(hline(X0, X1, s3.y(cap), '#f0d77a', '5 4'));
   svg.append(...line(rows.map(r => ({ t: r.t, v: r.lp })), x, s3.y, '#b9f2b0', 1.8));
   svg.append(text(X0 - 6, panels[2].top + 10, usd(s3.hi), 'end'), text(X0 - 6, panels[2].top + panels[2].h, usd(s3.lo), 'end'));
   label(panels[2], L('LP 可用余额', 'LP bankroll'), '#b9f2b0');
+  if (lps.length && fin(cap)) svg.append(text(X0, panels[2].top - 6, L(`- - 当前超额分配阈值 ${usd(cap)}`, `- - Current excess allocation threshold ${usd(cap)}`), 'start', '#f0d77a'));
 
   // Day ticks (Singapore time) along the bottom.
   const span = t1 - t0, step = span > 20 * 86400000 ? 5 * 86400000 : span > 6 * 86400000 ? 86400000 : span > 2 * 86400000 ? 12 * 3600000 : 6 * 3600000;
