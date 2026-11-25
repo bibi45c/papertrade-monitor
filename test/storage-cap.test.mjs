@@ -57,6 +57,8 @@ test('minute rows stay small however long the governance history grows', () => {
   assert.deepEqual(rows.at(-2), legacy);
   assert.deepEqual(rows[0], { id: id(181), selector: '8b07f62b', readyAt: 1, scheduledBlock: 181, resolvedBlock: 1181, outcome: 'executed' });
   assert.ok(Buffer.byteLength(JSON.stringify(rows)) < 5000);
+  const sameBlock = Array.from({ length: 21 }, (_, n) => ({ id: id(n), resolvedBlock: 9, resolvedLogIndex: n === 20 ? 99 : n, outcome: 'executed' }));
+  assert.ok(minuteOperations(sameBlock).some(o => o.id === id(20)));
 });
 
 test('public JSON responses allow cross-origin reads', async () => {

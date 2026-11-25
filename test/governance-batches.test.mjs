@@ -249,13 +249,57 @@ test('missing schedules retain at most the newest 100 known endings until covera
   const repeated = await scan([...logs].reverse(), { previous: { ...state, lastScannedBlock: 13 }, head: 14 });
   assert.deepEqual(repeated.orphanEndings, state.orphanEndings);
   const recovered = await scan([schedule({ id: 105 }), schedule({ id: 104, index: 2 })], { previous: repeated, head: 14 });
-  assert.deepEqual(recovered.gaps, [[13, 13]]);
+  assert.deepEqual(recovered.gaps, [[13, 14]]); // block 14 is read again for the endings over the limit
   assert.deepEqual(recovered.operations.map(o => o.outcome), ['executed', 'cancelled']);
   assert.equal(recovered.orphanEndings.length, 98);
   assert.equal(recovered.orphanEndings[0].id, hash(103));
   const covered = await scan([], { previous: recovered, head: 14 });
   assert.equal(covered.coverageComplete, true);
   assert.deepEqual(covered.orphanEndings, []);
+});
+
+test('an empty database backfills the known batch ranges too', async () => {
+  let state = null;
+  const fetcher = fixtureFetcher(history);
+  for (let run = 0; run < 6 && (!state || state.gaps.length); run++) state = await scanGovernance({ previous: state, fetcher });
+  assert.deepEqual(state.gaps, []);
+  assert.deepEqual(batches(state), batches(await fullHistory()));
+});
+
+test('endings beyond the orphan limit are rescanned instead of lost', async () => {
+  const count = 150, scheduleBlock = 20, firstEnding = 1000, head = 1300;
+  const logs = [
+    ...Array.from({ length: count }, (_, i) => schedule({ id: i + 1, block: scheduleBlock, index: i, tx: i + 1 })),
+    ...Array.from({ length: count }, (_, i) => ending({ id: i + 1, block: firstEnding + i, index: 1, tx: 1000 + i })),
+  ];
+  // The endings are read first while the schedules sit in an older gap whose reads fail for a while.
+  let state = { lastScannedBlock: firstEnding - 1, gaps: [[scheduleBlock, scheduleBlock]], operations: [], batchBackfill: 1 };
+  let blocked = true;
+  const fetcher = fixtureFetcher(logs, { head, fail: from => blocked && from <= scheduleBlock });
+  state = await scanGovernance({ previous: state, fetcher });
+  assert.equal(state.orphanEndings.length, 100);
+  assert.ok(state.gaps.length > 1);
+  blocked = false;
+  let runs = 0;
+  while (state.gaps.length && runs++ < 40) state = await scanGovernance({ previous: state, fetcher });
+  assert.deepEqual(state.gaps, []);
+  assert.deepEqual(state.orphanEndings, []);
+  assert.equal(state.operations.length, count);
+  assert.ok(state.operations.every(o => o.outcome === 'executed'));
+});
+
+test('endings whose schedule never appears cannot keep the scan open forever', async () => {
+  const logs = Array.from({ length: 150 }, (_, i) => ending({ id: i + 1, block: 1000 + i, index: 1, tx: 1000 + i }));
+  let state = { lastScannedBlock: 999, gaps: [[20, 20]], operations: [], batchBackfill: 1 }, blocked = true;
+  const fetcher = fixtureFetcher(logs, { head: 1300, fail: from => blocked && from <= 20 });
+  state = await scanGovernance({ previous: state, fetcher });
+  assert.ok(state.gaps.length > 1);
+  blocked = false;
+  let runs = 0;
+  while (state.gaps.length && runs++ < 60) state = await scanGovernance({ previous: state, fetcher });
+  assert.deepEqual(state.gaps, []);
+  assert.deepEqual(state.orphanEndings, []);
+  assert.deepEqual(state.operations, []);
 });
 
 test('maximal decoded batches share a 300 KB budget and only the newest 200 ended operations remain', async () => {

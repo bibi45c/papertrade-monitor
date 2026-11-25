@@ -338,7 +338,7 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
   const last = Number.isSafeInteger(previous?.lastScannedBlock) ? previous.lastScannedBlock : Math.max(0, head - 300);
   if (head < last) throw new Error('Governance head moved behind cursor');
   const from = Math.max(last + 1, head - 999, 0), events = [], readErrors = [];
-  const backfill = Number.isSafeInteger(previous?.lastScannedBlock) && !previous.batchBackfill
+  const backfill = !previous?.batchBackfill
     ? BATCH_BACKFILL_RANGES.map(([start, end]) => [start, Math.min(end, last)]) : [];
   let gaps = mergeBlockRanges([...(previous?.gaps ?? []), ...backfill, ...(from > last + 1 ? [[last + 1, from - 1]] : [])]);
   const read = async (start, end, via = rpc, quiet = false) => {
@@ -431,8 +431,13 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
   const recent = [...new Map([...(previous?.recentEvents ?? []), ...events.filter(e => !isSchedule(e))].map(e => [eventKey(e), e])).values()]
     .filter(e => !isSchedule(e) && !((e.address == null || e.address === GOVERNANCE.timelock) && e.topic0 === TOPICS.batchScheduled))
     .sort((a, b) => b.block - a.block || (a.logIndex ?? -1) - (b.logIndex ?? -1)).slice(0, 20);
-  const orphanEndings = [...orphans.values()].sort((a, b) => newest(a.block, a.logIndex, b.block, b.logIndex)
-    || a.id.localeCompare(b.id) || a.topic0.localeCompare(b.topic0)).slice(0, 100);
+  const waiting = [...orphans.values()].sort((a, b) => newest(a.block, a.logIndex, b.block, b.logIndex)
+    || a.id.localeCompare(b.id) || a.topic0.localeCompare(b.topic0));
+  const orphanEndings = waiting.slice(0, 100);
+  // Endings over the limit go back to the unread ranges while an older unread range could still hold their schedule.
+  // Ranges heal oldest first and the lowest one is never put back, so the scan finishes even if no schedule appears.
+  const unread = gaps;
+  gaps = mergeBlockRanges([...gaps, ...waiting.slice(100).filter(o => unread.some(([start]) => start <= o.block)).map(o => [o.block, o.block])]);
   return { at: Date.now(), block: '0x' + head.toString(16), lastScannedBlock: head, scannedFrom: from,
     ...limitGovernanceDetails(operations, recent), orphanEndings, batchBackfill: 1,
     gaps, readErrors, coverageComplete: gaps.length === 0 && readErrors.length === 0 };

@@ -118,7 +118,7 @@ export async function readTokenomics({ fetcher = fetch } = {}) {
 // Minute rows repeat this list 1440 times a day, so it must stay small: pending operations in full (without batch items),
 // plus a short line for the newest 20 ended ones. Full records stay in auxiliary_state.
 export function minuteOperations(operations) {
-  const ended = operations.filter(o => o.resolvedBlock != null).sort((a, b) => b.resolvedBlock - a.resolvedBlock).slice(0, 20);
+  const ended = operations.filter(o => o.resolvedBlock != null).sort((a, b) => b.resolvedBlock - a.resolvedBlock || (b.resolvedLogIndex ?? -1) - (a.resolvedLogIndex ?? -1)).slice(0, 20);
   const kept = new Set(ended);
   return operations.filter(o => o.resolvedBlock == null || kept.has(o)).map(o => {
     if (o.resolvedBlock == null) { const { batch, ...op } = o; return op; }
