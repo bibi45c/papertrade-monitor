@@ -101,3 +101,25 @@ test('exposure endpoint returns the first snapshot per 15 minutes with legs matc
   assert.equal((await getExposure(db, 1, now, now - 50 * 60000)).points.length, 1); // since skips older buckets
   assert.deepEqual(points[1].slice(1, 9), [4.9e6, 2e7, 1, 2, 3, 4, 60000, 2000]); assert.equal(points[1][11], -5);
 });
+
+test('hour-boundary lookups walk the hours first and never scan the stored minutes once per hour', async () => {
+  const { getDividendHistory } = await import('../src/storage.mjs'), { missingHours } = await import('../src/chain-index.mjs');
+  const db = database(); db.native.exec(readFileSync(new URL('../migrations/0003_chain_hourly.sql', import.meta.url), 'utf8'));
+  const hour = 3600000, end = 1000 * hour, now = end + 90000;
+  const insert = db.native.prepare("INSERT INTO snapshots (collected_at, reward_accumulator, payload) VALUES (?, ?, '{}')");
+  for (let t = end - 60 * hour; t <= now + 120000; t += 60000) insert.run(t, String(t));
+  const queries = [], spy = { prepare(sql) { queries.push(sql); return db.prepare(sql); } };
+  const { rows } = await getDividendHistory(spy, now);
+  const want = [];
+  for (let h = end - 48 * hour; h <= end; h += hour) for (let t = h - 120000; t <= h + 120000; t += 60000) if (t <= now) want.push(t);
+  assert.deepEqual(rows.map(r => r.collected_at), want);
+  assert.deepEqual((await getDividendHistory(spy, end + 30 * 60000)).rows.at(-1).collected_at, now + 90000);
+  assert.deepEqual(await missingHours(spy, now, end - 60 * hour), []);
+  const joins = queries.filter(sql => sql.includes('WITH RECURSIVE'));
+  assert.equal(joins.length, 3);
+  for (const sql of joins) {
+    const plan = db.native.prepare('EXPLAIN QUERY PLAN ' + sql).all(...Array(Math.max(...[...sql.matchAll(/\?(\d)/g)].map(m => +m[1]))).fill(0)).map(r => r.detail);
+    const lookup = plan.findIndex(d => /^SEARCH s USING/.test(d));
+    assert.ok(lookup > 0 && plan.findLastIndex(d => d === 'SCAN hours') < lookup, plan.join(' | '));
+  }
+});

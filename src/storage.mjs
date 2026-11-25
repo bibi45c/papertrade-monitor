@@ -92,13 +92,13 @@ export async function getExposure(db, days = 14, now = Date.now(), since = null)
 
 export async function getDividendHistory(db, now = Date.now()) {
   const endAt = Math.floor(now / 3600000) * 3600000, from = endAt - 48 * 3600000 - 120000;
-  // One index range lookup per hour boundary (±2 min), plus the latest row: ~250 rows read instead of a 48-hour scan.
+  // One index range lookup per hour boundary (±2 min), plus the latest row: ~350 rows read. CROSS JOIN pins the loop order:
+  // with a plain JOIN and an outer time filter SQLite scanned all 48 hours once per boundary, 150,000 rows per call on D1.
   const data = await db.prepare(`WITH RECURSIVE hours(h) AS (SELECT ?1 UNION ALL SELECT h + 3600000 FROM hours WHERE h + 3600000 <= ?2)
-    SELECT collected_at, reward_accumulator FROM (
-      SELECT s.collected_at, s.reward_accumulator FROM hours JOIN snapshots s ON s.collected_at BETWEEN hours.h - 120000 AND hours.h + 120000
-      UNION SELECT collected_at, reward_accumulator FROM snapshots WHERE collected_at = (SELECT MAX(collected_at) FROM snapshots))
-    WHERE collected_at >= ?3 AND collected_at <= ?4 ORDER BY collected_at LIMIT 246`).bind(endAt - 48 * 3600000, endAt, from, now).all();
-  const rows = [...(data.results ?? [])]; // snapshot rows stay compact; only chain-filled rows carry source and block
+    SELECT s.collected_at, s.reward_accumulator FROM hours CROSS JOIN snapshots s ON s.collected_at BETWEEN hours.h - 120000 AND hours.h + 120000`).bind(endAt - 48 * 3600000, endAt).all();
+  const rows = (data.results ?? []).filter(r => r.collected_at <= now); // snapshot rows stay compact; only chain-filled rows carry source and block
+  const newest = await db.prepare('SELECT collected_at, reward_accumulator FROM snapshots WHERE collected_at >= ? AND collected_at <= ? ORDER BY collected_at DESC LIMIT 1').bind(from, now).all();
+  for (const r of newest.results ?? []) if (!rows.some(x => x.collected_at === r.collected_at)) rows.push(r);
   // Hours without a stored snapshot use the staking contract's accumulator read at that hour's block (0003 chain_hourly).
   const chain = await db.prepare('SELECT block_at AS collected_at, accumulator AS reward_accumulator, block FROM chain_hourly WHERE hour_at >= ? AND hour_at <= ? AND accumulator IS NOT NULL ORDER BY hour_at')
     .bind(from, endAt).all().catch(() => ({ results: [] }));
