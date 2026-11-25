@@ -2,7 +2,7 @@ import { makePlan, emissionRate, executionQueueStatus, dividendWindow48, profitW
 import { FIELDS, TABLES, readProfitCache, writeProfitCache, validProfitCache } from './profit-cache.mjs';
 import { language, initializeLanguage, translateMessage as t } from './i18n.mjs';
 import { renderExposure, mergeSeries } from './exposure.mjs';
-import { renderGovernanceTable } from './governance-view.mjs';
+import { isPending, renderGovernanceTable } from './governance-view.mjs';
 import { buildAlerts, renderAlerts } from './alerts-view.mjs';
 import { renderSupplyChart } from './supply-chart.mjs';
 initializeLanguage();
@@ -101,11 +101,11 @@ async function loadExposure() {
 function renderRisk() {
   if (!snapshot) return;
   const s = snapshot, g = pickNewer(s.governance, stored?.governance), now = Date.now(), pct = v => v === null || v === undefined ? '5% 内不会' : number(v * 100, 2) + '%';
-  const ops = (g?.operations ?? []).filter(o => Number.isFinite(o.readyAt)), applied = o => o.resolvedBlock || (o.selector === '12baae3b' && Number(o.args?.[1]) > 0 && s.paper?.cap >= Number(o.args[1])), pending = ops.filter(o => !applied(o));
+  const ops = g?.operations ?? [], cap = s.paper?.cap, pending = ops.filter(o => isPending(o, cap));
   set('govCount', g ? String(pending.length) : '不可用');
   const next = pending.map(o => o.readyAt).sort((a, b) => a - b)[0];
   set('govNote', !g ? '还没有治理扫描数据' : (g.stale || now - g.at > 10 * 60000 ? '扫描失败或过期，先用旧记录 · ' : '') + (next ? '最早 ' + time(next) + ' 可执行（' + number((next - now) / 86400000, 1) + ' 天）' : '已知记录里没有待执行的') + ' · 已扫到区块 ' + (g.lastScannedBlock ?? '—') + (g.gaps?.length ? ' · ' + g.gaps.length + ' 段缺口没补完，记录可能不全' : ''));
-  renderGovernanceTable({ ops, now, time, applied, lang: language, number, available: !!g });
+  renderGovernanceTable({ ops, now, time, cap, lang: language, number, available: !!g });
   const web = pickNewer(s.web, stored?.web);
   const alerts = buildAlerts({ listing: s.listing, web, events: g?.recentEvents, lang: language, time, now });
   set('listingCount', s.listing ? String(alerts.length) : '不可用');

@@ -115,6 +115,18 @@ export async function readTokenomics({ fetcher = fetch } = {}) {
   return out;
 }
 
+// Minute rows repeat this list 1440 times a day, so it must stay small: pending operations in full (without batch items),
+// plus a short line for the newest 20 ended ones. Full records stay in auxiliary_state.
+export function minuteOperations(operations) {
+  const ended = operations.filter(o => o.resolvedBlock != null).sort((a, b) => b.resolvedBlock - a.resolvedBlock).slice(0, 20);
+  const kept = new Set(ended);
+  return operations.filter(o => o.resolvedBlock == null || kept.has(o)).map(o => {
+    if (o.resolvedBlock == null) { const { batch, ...op } = o; return op; }
+    const { id, selector, readyAt, scheduledBlock, resolvedBlock, resolvedTopic, outcome } = o;
+    return { id, selector, readyAt, scheduledBlock, resolvedBlock, ...(outcome ? { outcome } : { resolvedTopic }) };
+  });
+}
+
 export async function collect({ fetcher = fetch, now = Date.now(), pressureReader = () => readExecutionQueue({ fetcher }), previous = null, checkWeb = false, scanGov = false, auxiliary = true, deriveRisk = true } = {}) {
   const result = { version: 1, collectedAt: now, sources: {}, markets: [], paper: null, balances: null, trading: null, queue: null,
     executionQueue: { available: false, reason: '全球执行队列尚未收到有效状态；个人排名未查询。' }, paperMarketPrice: { value: null, reason: '启动期 PAPER 不可转让；未核实可交易市场，分红和铸币成本不能替代市场报价。' } };
@@ -158,7 +170,11 @@ export async function collect({ fetcher = fetch, now = Date.now(), pressureReade
   result.governance = values.governance ?? (previous?.governance ? { ...previous.governance, stale: auxiliary ? true : previous.governance.stale ?? false } : null);
   // 分钟行只留治理摘要：完整的 recentEvents/gaps 在 auxiliary_state，读取时由 attachAuxiliary 补回。
   // 每分钟重复整份治理扫描会让单行翻倍，D1 免费版 500MB 会在约两周内写满（2026-10-27 已发生）。
-  if (!auxiliary && result.governance) { const { recentEvents, gaps, ...summary } = result.governance; result.governance = summary; }
+  if (!auxiliary && result.governance) {
+    const { recentEvents, gaps, orphanEndings, batchBackfill, operations, ...summary } = result.governance;
+    if (operations) summary.operations = minuteOperations(operations);
+    result.governance = summary;
+  }
   if (!auxiliary) for (const key of ['protocolHistory', 'governance', 'web']) {
     if (previous?.sources?.[key]) result.sources[key] = { ...previous.sources[key], retained: true };
   }

@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync } from 'node:fs';
 import { saveSnapshot, purgeExpired } from '../src/storage.mjs';
-import { collect } from '../src/collect.mjs';
+import { collect, minuteOperations } from '../src/collect.mjs';
 import { api } from '../src/worker.mjs';
+import { attachAuxiliary } from '../src/auxiliary.mjs';
 
 function database() {
   const native = new DatabaseSync(':memory:'); native.exec(readFileSync(new URL('../migrations/0001_snapshots.sql', import.meta.url), 'utf8'));
@@ -27,12 +28,35 @@ test('purge keeps 14 days of minutes, first row per hour until 90 days, nothing 
   assert.deepEqual(left, [at(now - 30 * day, 1), at(now - 15 * day, 1), at(now - 2 * day, 1), at(now - 2 * day, 2), at(now - 2 * day, 30)]);
 });
 
-test('core minute rows keep a governance summary without recentEvents or gaps', async () => {
-  const previous = { governance: { at: 1, lastScannedBlock: 9, operations: [{ id: 'op' }], recentEvents: [{ tx: '0x1' }], gaps: [[1, 2]], stale: false } };
+test('core minute rows keep batch counts while auxiliary retains the full governance state', async () => {
+  const previous = { governance: {
+    at: 1, lastScannedBlock: 9, operations: [{ id: 'op', selector: '8b07f62b', batchSize: 1, batch: [{ selector: 'deadbeef' }] }],
+    recentEvents: [{ tx: '0x1' }], gaps: [[1, 2]], orphanEndings: [{ id: 'missing' }], batchBackfill: 1, stale: false,
+  } };
+  const saved = structuredClone(previous);
   const fetcher = async () => { throw new Error('offline'); };
   const s = await collect({ previous, auxiliary: false, deriveRisk: false, fetcher });
-  assert.deepEqual(s.governance, { at: 1, lastScannedBlock: 9, operations: [{ id: 'op' }], stale: false });
-  assert.equal(previous.governance.recentEvents.length, 1);
+  assert.deepEqual(s.governance, { at: 1, lastScannedBlock: 9, operations: [{ id: 'op', selector: '8b07f62b', batchSize: 1 }], stale: false });
+  assert.deepEqual(previous, saved);
+  const attached = attachAuxiliary(s, previous).governance;
+  assert.equal(attached.operations[0].batch[0].selector, 'deadbeef');
+  assert.deepEqual(attached.orphanEndings, saved.governance.orphanEndings);
+  assert.equal(attached.batchBackfill, 1);
+});
+
+test('minute rows stay small however long the governance history grows', () => {
+  const id = n => '0x' + n.toString(16).padStart(64, '0');
+  const ended = Array.from({ length: 200 }, (_, n) => ({ kind: 'batchScheduled', id: id(n), salt: id(n), target: id(1).slice(0, 42), selector: '8b07f62b', label: 'timelock 批量排程 scheduleBatch', where: 'Timelock（最短延迟 1 天）',
+    batchSize: 64, batch: [{}], readyAt: 1, scheduledBlock: n, scheduledTx: id(n), resolvedBlock: 1000 + n, resolvedTopic: id(7), outcome: 'executed' }));
+  const legacy = { id: id(900), selector: '12baae3b', readyAt: 1, scheduledBlock: 5, resolvedBlock: 5000, resolvedTopic: id(8) };
+  const pending = { kind: 'batchScheduled', id: id(999), selector: '8b07f62b', batchSize: 2, batch: [{}, {}], readyAt: 2, scheduledBlock: 3000, scheduledTx: id(3) };
+  const all = [...ended, legacy, pending], saved = structuredClone(all), rows = minuteOperations(all);
+  assert.deepEqual(all, saved);
+  assert.equal(rows.length, 21);
+  assert.deepEqual(rows.at(-1), { kind: 'batchScheduled', id: id(999), selector: '8b07f62b', batchSize: 2, readyAt: 2, scheduledBlock: 3000, scheduledTx: id(3) });
+  assert.deepEqual(rows.at(-2), legacy);
+  assert.deepEqual(rows[0], { id: id(181), selector: '8b07f62b', readyAt: 1, scheduledBlock: 181, resolvedBlock: 1181, outcome: 'executed' });
+  assert.ok(Buffer.byteLength(JSON.stringify(rows)) < 5000);
 });
 
 test('public JSON responses allow cross-origin reads', async () => {

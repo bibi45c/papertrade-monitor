@@ -14,8 +14,11 @@ export const GOVERNANCE = Object.freeze({
 // 合约源码未验证；以下事件和函数名由 2026-10-11 的链上交易反推。
 const TOPICS = Object.freeze({
   scheduled: '0x78f3bc93d9f0e2beb7fc8fe3192b142c5e70b8813403674aff3f81fc83af5b39',
+  batchScheduled: '0x0b9c64b5b18792c995334aa1e837673c5a9cdb8f004ab10fb652f4eecb8d551f',
   operationExecuted: '0x2a08801cf3674ab09756ae78a3a4833813465af6af958136b360eab6b71c8952',
+  batchExecuted: '0xaa1510acf32db51981a900a90589bafbf6f442c657a0b916fd3afe22c1474bcd',
   operationCancelled: '0xcf0f63b97f3387253cbc0bde884f975df77e39184dc3280c2c81be495f58eef4',
+  minDelayUpdated: '0x25cd0ae91e995bc58ea33869249d0bcf40f2b2c8331ec976c96096bf7d27f464',
   submitted: '0xbe411f0729ceed75',
   executed: '0xd3fb8b9f824d81f0',
   signersSet: '0xddfe9ff988d8830e',
@@ -162,10 +165,38 @@ function describeNestedCall(target, data, depth, includeBatch) {
 }
 
 // timelock 排程事件：topics[1]=操作 ID，topics[2]=目标；data = value, offset, salt, readyAt(秒), len, calldata
+function timelockData(log, words) {
+  if (typeof log.data !== 'string' || !/^0x(?:[\da-f]{64})*$/i.test(log.data)
+    || (words !== undefined && log.data.length !== 2 + words * 64)) throw new Error('Malformed timelock event');
+  return log.data.slice(2);
+}
+
+function timelockCalldata(d, headWords) {
+  const start = headWords * 64;
+  const data = abiBytes(d, start);
+  if (abiSize(d, 64) !== headWords * 32 || data === null || d.length !== start + 64 + Math.ceil(data.length / 64) * 64) {
+    throw new Error('Malformed timelock event');
+  }
+  return data;
+}
+
+function timelockOperationId(log) {
+  const id = log.topics[1];
+  if (typeof id !== 'string' || !/^0x[\da-f]{64}$/i.test(id)) throw new Error('Malformed timelock event');
+  return id;
+}
+
+function scheduleFields(log, seconds) {
+  const readyAt = seconds * 1000;
+  if (!Number.isSafeInteger(readyAt)) throw new Error('Malformed timelock event');
+  return { id: timelockOperationId(log), ...(log.logIndex == null ? {} : { scheduledLogIndex: Number(BigInt(log.logIndex)) }),
+    readyAt, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash };
+}
+
 export function decodeScheduled(log) {
-  const d = log.data.slice(2), len = Number(big(word(d, 4))), calldata = d.slice(5 * 64, 5 * 64 + len * 2);
+  const d = timelockData(log), calldata = timelockCalldata(d, 4);
   const target = toAddress(log.topics[2].slice(2));
-  return { id: log.topics[1], target, ...(log.logIndex == null ? {} : { scheduledLogIndex: Number(BigInt(log.logIndex)) }), readyAt: Number(big(word(d, 3))) * 1000, scheduledBlock: Number(BigInt(log.blockNumber)), scheduledTx: log.transactionHash, ...describeNestedCall(target, calldata, 0, false) };
+  return { ...scheduleFields(log, abiSize(d, 3 * 64) ?? NaN), target, ...describeNestedCall(target, calldata, 0, false) };
 }
 
 export function decodeLog(log) {
@@ -173,8 +204,25 @@ export function decodeLog(log) {
   let kind;
   if (address === GOVERNANCE.timelock) {
     if (t0 === TOPICS.scheduled) return { kind: 'scheduled', ...decodeScheduled(log) };
-    if (t0 === TOPICS.operationExecuted) kind = 'operationExecuted';
-    if (t0 === TOPICS.operationCancelled) kind = 'operationCancelled';
+    if (t0 === TOPICS.batchScheduled) {
+      const d = timelockData(log, 3), batchSize = abiSize(d, 0), target = GOVERNANCE.timelock;
+      if (batchSize === null || batchSize < 1) throw new Error('Malformed timelock event');
+      const { selector, label, where } = describeCall(target, '8b07f62b');
+      return { kind: 'batchScheduled', ...scheduleFields(log, abiSize(d, 2 * 64) ?? NaN), batchSize,
+        salt: '0x' + word(d, 1).toLowerCase(), target, selector, label, where };
+    }
+    if (t0 === TOPICS.operationExecuted || t0 === TOPICS.batchExecuted) {
+      timelockOperationId(log);
+      if (t0 === TOPICS.batchExecuted) timelockData(log, 1);
+      else timelockCalldata(timelockData(log), 2);
+      kind = 'operationExecuted';
+    }
+    if (t0 === TOPICS.operationCancelled) {
+      timelockOperationId(log);
+      timelockData(log, 0);
+      kind = 'operationCancelled';
+    }
+    if (t0 === TOPICS.minDelayUpdated) timelockData(log, 1);
   }
   kind ??= t0.startsWith(TOPICS.submitted) ? 'multisigSubmitted' : t0.startsWith(TOPICS.executed) ? 'multisigExecuted' : t0.startsWith(TOPICS.signersSet) ? 'signersSet' : 'unknown';
   let call = null;
@@ -207,6 +255,79 @@ function subtractRange(ranges, from, through) {
 // The official RPC rate-limits getLogs to ~1,000-block ranges, so historical gaps never caught up. Gap healing first
 // tries a public archive RPC with 50,000-block ranges (verified 2026-11-19 against the official node), then falls back.
 export const GAP_RPC = 'https://rpc.hyperlend.finance/archive';
+export const BATCH_BACKFILL_RANGES = Object.freeze([
+  [49080037, 49080037], [49169385, 49169385], [49407792, 49407812], [49505121, 49505138],
+  [49613797, 49613899], [49758751, 49758789], [49876315, 49876315], [50507327, 50507327],
+  [50819178, 50819341], [50936253, 50936265], [51086922, 51086922], [51291026, 51291026],
+  [51610328, 51610328], [52099293, Number.MAX_SAFE_INTEGER],
+].map(Object.freeze));
+
+const ENDINGS = [TOPICS.operationExecuted, TOPICS.batchExecuted, TOPICS.operationCancelled];
+const isSchedule = e => e.kind === 'scheduled' || e.kind === 'batchScheduled';
+const eventKey = e => e.tx + ':' + e.topic0 + ':' + e.topic1;
+const before = (block, index, otherBlock, otherIndex) => block < otherBlock || (block === otherBlock && index < otherIndex);
+const newest = (block, index, otherBlock, otherIndex) => otherBlock - block || (otherIndex ?? -1) - (index ?? -1);
+
+function pairBatchDetails(schedules, events) {
+  const byTx = new Map(), paired = new Map();
+  for (const e of events) {
+    if (e.kind !== 'multisigExecuted' || e.address !== GOVERNANCE.multisig || !e.tx) continue;
+    if (!byTx.has(e.tx)) byTx.set(e.tx, { executions: [], batches: [] });
+    byTx.get(e.tx).executions.push(e);
+  }
+  for (const e of schedules) {
+    if (e.kind === 'batchScheduled' && e.batchSize <= MAX_BATCH_SIZE) byTx.get(e.scheduledTx)?.batches.push(e);
+  }
+  const matchesCall = (e, call) => call?.target === GOVERNANCE.timelock && call.selector === e.selector
+    && call.batch?.length === e.batchSize && /^0x[\da-f]{64}$/i.test(e.salt) && call.args?.[3] === BigInt(e.salt).toString();
+  const canFollow = (e, x) => e.scheduledBlock === x.block
+    && (x.logIndex == null || e.scheduledLogIndex == null || x.logIndex > e.scheduledLogIndex);
+  for (const { executions, batches } of byTx.values()) {
+    const used = new Set();
+    // If two schedules precede the same execution, give the closer schedule the first chance to match.
+    batches.sort((a, b) => (b.scheduledLogIndex ?? -1) - (a.scheduledLogIndex ?? -1));
+    executions.sort((a, b) => (a.logIndex ?? -1) - (b.logIndex ?? -1));
+    for (const e of batches) {
+      const candidates = executions.filter(x => canFollow(e, x));
+      if (candidates.length > 1 && (e.scheduledLogIndex == null || candidates.some(x => x.logIndex == null))) continue;
+      const match = candidates[0], call = match?.call;
+      if (used.has(match) || !matchesCall(e, call)) continue;
+      if (batches.some(other => other !== e && canFollow(other, match)
+        && (match.logIndex == null || other.scheduledLogIndex == null || e.scheduledLogIndex == null)
+        && matchesCall(other, call))) continue;
+      used.add(match);
+      paired.set(e, call.batch);
+    }
+  }
+  return paired;
+}
+
+function limitGovernanceDetails(operations, recentEvents) {
+  const encoder = new TextEncoder();
+  let remaining = 300000;
+  const entries = [
+    ...operations.map(o => ({ record: o, pending: o.resolvedBlock == null, block: o.scheduledBlock, index: o.scheduledLogIndex })),
+    ...recentEvents.map(e => ({ record: e, pending: false, block: e.block, index: e.logIndex })),
+  ].sort((a, b) => Number(b.pending) - Number(a.pending) || newest(a.block, a.index, b.block, b.index));
+  function limit(call) {
+    if (!call?.batch && !call?.inner) return call;
+    const { batch, inner, ...fields } = call;
+    if (Array.isArray(batch)) {
+      const bytes = encoder.encode(JSON.stringify(batch)).length + ',"batch":'.length;
+      fields.batchSize ??= batch.length;
+      if (bytes <= remaining) {
+        fields.batch = batch;
+        remaining -= bytes;
+      }
+    }
+    if (inner) fields.inner = limit(inner);
+    return fields;
+  }
+  const bounded = new Map(entries.map(({ record }) => [record, record.call
+    ? { ...record, call: limit(record.call) } : limit(record)]));
+  return { operations: operations.map(o => bounded.get(o)), recentEvents: recentEvents.map(e => bounded.get(e)) };
+}
+
 // One recent chunk, then oldest pending chunks. Successful ranges alone are removed.
 export async function scanGovernance({ fetcher = fetch, previous = null, maxChunks = 3, archiveUrl = GAP_RPC, gapChunkBlocks = 50000, maxGapChunks = 8 } = {}) {
   if (!Number.isSafeInteger(maxChunks) || maxChunks < 1 || maxChunks > 10) throw new RangeError('Invalid governance chunk budget');
@@ -217,7 +338,9 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
   const last = Number.isSafeInteger(previous?.lastScannedBlock) ? previous.lastScannedBlock : Math.max(0, head - 300);
   if (head < last) throw new Error('Governance head moved behind cursor');
   const from = Math.max(last + 1, head - 999, 0), events = [], readErrors = [];
-  let gaps = mergeBlockRanges([...(previous?.gaps ?? []), ...(from > last + 1 ? [[last + 1, from - 1]] : [])]);
+  const backfill = Number.isSafeInteger(previous?.lastScannedBlock) && !previous.batchBackfill
+    ? BATCH_BACKFILL_RANGES.map(([start, end]) => [start, Math.min(end, last)]) : [];
+  let gaps = mergeBlockRanges([...(previous?.gaps ?? []), ...backfill, ...(from > last + 1 ? [[last + 1, from - 1]] : [])]);
   const read = async (start, end, via = rpc, quiet = false) => {
     try {
       const result = await via('eth_getLogs', [{ address: [GOVERNANCE.timelock, GOVERNANCE.multisig], fromBlock: '0x' + start.toString(16), toBlock: '0x' + end.toString(16) }]);
@@ -233,36 +356,64 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
   let used = 0;
   if (from <= head) { await read(from, head); used++; }
   // Large archive reads for the oldest gaps; a failed archive read leaves the gap for the official fallback below.
-  for (let n = 0; archive && n < maxGapChunks && gaps.length; n++) {
+  let healed = 0;
+  while (archive && healed < maxGapChunks && gaps.length) {
     const [start, lastBlock] = gaps[0], end = Math.min(lastBlock, start + gapChunkBlocks - 1);
     if (!await read(start, end, archive, true)) break;
+    healed++;
   }
-  while (used < maxChunks && gaps.length) {
+  while (used < maxChunks && (!archive || !maxGapChunks || healed < maxGapChunks) && gaps.length) {
     const [start, lastBlock] = gaps[0], end = Math.min(lastBlock, start + 999);
     used++;
     if (!await read(start, end)) break;
+    healed++;
   }
   const ops = new Map((previous?.operations ?? KNOWN_OPERATIONS).map(o => [o.id, o]));
+  const schedules = events.filter(isSchedule);
+  const scheduleKey = o => o.scheduledTx + ':' + o.id;
+  const scannedSchedules = new Set(schedules.map(scheduleKey));
+  const savedBatches = [...ops.values()].filter(o => o.kind === 'batchScheduled' && !scannedSchedules.has(scheduleKey(o)));
+  const details = pairBatchDetails([...schedules, ...savedBatches], events);
+  for (const o of savedBatches) {
+    if (details.has(o)) ops.set(o.id, { ...o, batch: details.get(o) });
+  }
   // Schedules first, then endings; within one block the log index decides (older stored records have none).
-  const before = (block, index, otherBlock, otherIndex) => block < otherBlock || (block === otherBlock && index < otherIndex);
-  for (const e of events) {
-    if (e.kind !== 'scheduled') continue;
+  for (const e of schedules) {
     const old = ops.get(e.id);
     if (before(e.scheduledBlock, e.scheduledLogIndex, old?.scheduledBlock, old?.scheduledLogIndex)) continue;
     const op = { ...old, ...e };
-    if (e.scheduledLogIndex === undefined) delete op.scheduledLogIndex;
+    const sameSchedule = e.scheduledBlock === old?.scheduledBlock && e.scheduledTx === old.scheduledTx
+      && (e.scheduledLogIndex == null || old.scheduledLogIndex == null || e.scheduledLogIndex === old.scheduledLogIndex);
+    if (!sameSchedule && e.scheduledLogIndex === undefined) delete op.scheduledLogIndex;
+    if (!sameSchedule || e.kind !== 'batchScheduled') {
+      delete op.batch;
+      if (e.kind !== 'batchScheduled') { delete op.batchSize; delete op.salt; }
+    }
+    if (details.has(e)) op.batch = details.get(e);
     if (before(op.resolvedBlock, op.resolvedLogIndex, op.scheduledBlock, op.scheduledLogIndex)) {
       for (const field of ['resolvedBlock', 'resolvedLogIndex', 'resolvedTopic', 'outcome']) delete op[field];
     }
     ops.set(e.id, op);
   }
-  const known = [TOPICS.operationExecuted, TOPICS.operationCancelled];
-  for (const e of events) {
-    if (e.address !== GOVERNANCE.timelock || !['operationExecuted', 'operationCancelled', 'unknown'].includes(e.kind)) continue;
+  const orphans = new Map();
+  const savedEndings = (previous?.orphanEndings ?? []).map(({ id, topic0, block, logIndex }) => ({
+    topic1: id, topic0, block, logIndex, address: GOVERNANCE.timelock,
+    kind: topic0 === TOPICS.operationCancelled ? 'operationCancelled' : 'operationExecuted',
+  }));
+  for (const e of [...savedEndings, ...events]) {
+    if (e.address !== GOVERNANCE.timelock || !e.topic1 || e.topic0 === TOPICS.minDelayUpdated
+      || !['operationExecuted', 'operationCancelled', 'unknown'].includes(e.kind)) continue;
     const old = ops.get(e.topic1);
-    if (!old || before(e.block, e.logIndex, old.scheduledBlock, old.scheduledLogIndex)) continue;
+    if (!old) {
+      if (gaps.length && ENDINGS.includes(e.topic0)) {
+        const { topic1: id, block, logIndex, topic0 } = e;
+        orphans.set([id, block, logIndex, topic0].join(':'), { id, block, ...(logIndex == null ? {} : { logIndex }), topic0 });
+      }
+      continue;
+    }
+    if (before(e.block, e.logIndex, old.scheduledBlock, old.scheduledLogIndex)) continue;
     // In one block a known ending beats an unrecognised event whatever their order; otherwise the later event wins.
-    const sameBlock = e.block === old.resolvedBlock, oldKnown = known.includes(old.resolvedTopic);
+    const sameBlock = e.block === old.resolvedBlock, oldKnown = ENDINGS.includes(old.resolvedTopic);
     if (sameBlock && e.kind === 'unknown' && oldKnown) continue;
     const upgrades = sameBlock && e.kind !== 'unknown' && !oldKnown;
     if (!upgrades && before(e.block, e.logIndex, old.resolvedBlock, old.resolvedLogIndex)) continue;
@@ -272,8 +423,19 @@ export async function scanGovernance({ fetcher = fetch, previous = null, maxChun
     else op.outcome = e.kind === 'operationExecuted' ? 'executed' : 'cancelled';
     ops.set(e.topic1, op);
   }
-  const recent = [...new Map([...(previous?.recentEvents ?? []), ...events.filter(e => e.kind !== 'scheduled')].map(e => [e.tx + ':' + e.topic0 + ':' + e.topic1, e])).values()].sort((a, b) => b.block - a.block).slice(0, 20);
-  return { at: Date.now(), block: '0x' + head.toString(16), lastScannedBlock: head, scannedFrom: from, operations: [...ops.values()], recentEvents: recent, gaps, readErrors, coverageComplete: gaps.length === 0 && readErrors.length === 0 };
+  const completed = [...ops.values()].filter(o => o.resolvedBlock != null)
+    .sort((a, b) => newest(a.resolvedBlock, a.resolvedLogIndex, b.resolvedBlock, b.resolvedLogIndex)
+      || newest(a.scheduledBlock, a.scheduledLogIndex, b.scheduledBlock, b.scheduledLogIndex) || a.id.localeCompare(b.id));
+  for (const o of completed.slice(200)) ops.delete(o.id);
+  const operations = [...ops.values()].sort((a, b) => newest(b.scheduledBlock, b.scheduledLogIndex, a.scheduledBlock, a.scheduledLogIndex));
+  const recent = [...new Map([...(previous?.recentEvents ?? []), ...events.filter(e => !isSchedule(e))].map(e => [eventKey(e), e])).values()]
+    .filter(e => !isSchedule(e) && !((e.address == null || e.address === GOVERNANCE.timelock) && e.topic0 === TOPICS.batchScheduled))
+    .sort((a, b) => b.block - a.block || (a.logIndex ?? -1) - (b.logIndex ?? -1)).slice(0, 20);
+  const orphanEndings = [...orphans.values()].sort((a, b) => newest(a.block, a.logIndex, b.block, b.logIndex)
+    || a.id.localeCompare(b.id) || a.topic0.localeCompare(b.topic0)).slice(0, 100);
+  return { at: Date.now(), block: '0x' + head.toString(16), lastScannedBlock: head, scannedFrom: from,
+    ...limitGovernanceDetails(operations, recent), orphanEndings, batchBackfill: 1,
+    gaps, readErrors, coverageComplete: gaps.length === 0 && readErrors.length === 0 };
 }
 
 // 上新、退市与参数变化：和上线时的 BTC/ETH 基线比较；任何新品种都按跳空风险分级。
